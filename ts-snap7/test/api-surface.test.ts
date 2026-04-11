@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AsyncIsoTransport,
   AsyncClient,
   Snap7NotImplementedError,
   codecModuleStatus,
@@ -12,8 +13,9 @@ import {
 describe("Task 1 API surface", () => {
   it("exports AsyncClient and module statuses", () => {
     expect(AsyncClient).toBeTypeOf("function");
-    expect(codecModuleStatus.ready).toBe(false);
-    expect(transportStatus.ready).toBe(false);
+    expect(AsyncIsoTransport).toBeTypeOf("function");
+    expect(codecModuleStatus.ready).toBe(true);
+    expect(transportStatus.ready).toBe(true);
     expect(legacyS7Status.ready).toBe(false);
     expect(s7CommPlusStatus.ready).toBe(false);
   });

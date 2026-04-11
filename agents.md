@@ -34,6 +34,11 @@
 - Docs: update API/docs/comments where required.
 - Reviewability: changes stay focused on current task only.
 
+## 4.1 Open-Source Commenting Rule
+- Because this is open-source software, implementation code must include detailed comments and docstrings comparable to `python-snap7`.
+- Public modules, classes, and exported functions must explain intent, protocol context, inputs/outputs, and notable edge cases.
+- Complex protocol logic must include concise inline rationale comments, not only type annotations.
+
 ## 5. Code Review Standard
 - Priority order: correctness > protocol fidelity > error handling > type safety > maintainability.
 - Findings are reported first and sorted by severity:
