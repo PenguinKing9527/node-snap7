@@ -1,0 +1,40 @@
+name: ts-snap7-ci
+
+on:
+  pull_request:
+    paths:
+      - "ts-snap7/**"
+      - ".github/workflows/ts-snap7-ci.yml"
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "ts-snap7/**"
+      - ".github/workflows/ts-snap7-ci.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts-snap7
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: ts-snap7/pnpm-lock.yaml
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify
+        run: pnpm run verify
