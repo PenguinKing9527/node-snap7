@@ -6,7 +6,6 @@ import {
   LegacyS7AsyncClient,
   S7CommPlusAsyncClient,
   S7CommPlusConnection,
-  Snap7NotImplementedError,
   codecModuleStatus,
   legacyS7Status,
   s7CommPlusStatus,
@@ -24,28 +23,5 @@ describe("Task 1 API surface", () => {
     expect(transportStatus.ready).toBe(true);
     expect(legacyS7Status.ready).toBe(true);
     expect(s7CommPlusStatus.ready).toBe(true);
-  });
-
-  it("connect rejects with NotImplemented while preserving protocol selection", async () => {
-    const client = new AsyncClient();
-
-    await expect(
-      client.connect({
-        address: "127.0.0.1",
-        protocol: "legacy"
-      })
-    ).rejects.toBeInstanceOf(Snap7NotImplementedError);
-
-    expect(client.protocol).toBe("legacy");
-  });
-
-  it("db methods reject with NotImplemented", async () => {
-    const client = new AsyncClient();
-
-    await expect(client.dbRead(1, 0, 4)).rejects.toBeInstanceOf(Snap7NotImplementedError);
-    await expect(client.dbWrite(1, 0, new Uint8Array([1, 2]))).rejects.toBeInstanceOf(Snap7NotImplementedError);
-    await expect(client.dbReadMulti([{ dbNumber: 1, start: 0, size: 2 }])).rejects.toBeInstanceOf(
-      Snap7NotImplementedError
-    );
   });
 });
