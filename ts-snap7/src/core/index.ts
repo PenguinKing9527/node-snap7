@@ -15,7 +15,17 @@ export const codecModuleStatus: CodecModuleStatus = {
   note: "Codec and VLQ primitives are implemented in Task 2."
 };
 
-export { DataType, Opcode, PROTOCOL_ID } from "./protocol.js";
+export {
+  DataType,
+  ElementID,
+  FunctionCode,
+  Ids,
+  ObjectId,
+  Opcode,
+  PROTOCOL_ID,
+  S7COMMPLUS_LOCAL_TSAP,
+  S7COMMPLUS_REMOTE_TSAP
+} from "./protocol.js";
 export {
   decodeInt32Vlq,
   decodeInt64Vlq,
@@ -28,6 +38,7 @@ export {
 } from "./vlq.js";
 export {
   decodeAidFromTypedValue,
+  decodePvalueToBytes,
   decodeFloat32,
   decodeFloat64,
   decodeHeader,
@@ -43,9 +54,12 @@ export {
   encodeFloat32,
   encodeFloat64,
   encodeHeader,
+  encodeItemAddress,
   encodeInt16,
   encodeInt32,
   encodeInt64,
+  encodeObjectQualifier,
+  encodePvalueBlob,
   encodeRequestHeader,
   encodeTypedValue,
   encodeUint16,

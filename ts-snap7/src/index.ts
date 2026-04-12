@@ -17,7 +17,14 @@ export {
 export {
   codecModuleStatus,
   DataType,
+  ElementID,
+  FunctionCode,
+  Ids,
+  ObjectId,
+  S7COMMPLUS_LOCAL_TSAP,
+  S7COMMPLUS_REMOTE_TSAP,
   decodeAidFromTypedValue,
+  decodePvalueToBytes,
   decodeFloat32,
   decodeFloat64,
   decodeHeader,
@@ -39,11 +46,14 @@ export {
   encodeFloat32,
   encodeFloat64,
   encodeHeader,
+  encodeItemAddress,
   encodeInt16,
   encodeInt32,
   encodeInt32Vlq,
   encodeInt64,
   encodeInt64Vlq,
+  encodeObjectQualifier,
+  encodePvalueBlob,
   encodeRequestHeader,
   encodeTypedValue,
   encodeUint16,
@@ -77,4 +87,15 @@ export {
   legacyS7Status
 } from "./s7/legacy/index.js";
 export type { LegacyS7Response, LegacyTransport } from "./s7/legacy/index.js";
-export { s7CommPlusStatus } from "./s7/plus/index.js";
+export {
+  S7CommPlusAsyncClient,
+  S7CommPlusConnection,
+  buildCreateSessionPayload,
+  buildReadPayload,
+  buildWritePayload,
+  parseReadResponse,
+  parseWriteResponse,
+  s7CommPlusStatus
+} from "./s7/plus/index.js";
+export type { PlusTransport } from "./s7/plus/index.js";
+export type { S7CommPlusConnectionLike } from "./s7/plus/index.js";

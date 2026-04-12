@@ -9,7 +9,10 @@
  */
 import { DataType, Opcode, PROTOCOL_ID } from "./protocol.js";
 import {
+  decodeInt32Vlq,
+  decodeInt64Vlq,
   decodeUint32Vlq,
+  decodeUint64Vlq,
   encodeInt32Vlq,
   encodeInt64Vlq,
   encodeUint32Vlq,
@@ -364,4 +367,159 @@ export function decodeAidFromTypedValue(data: Uint8Array, offset = 0): readonly 
   }
   const [value, consumed] = decodeUint32Vlq(data, offset + 1);
   return [value, consumed + 1] as const;
+}
+
+/**
+ * Encodes object qualifier structure used by S7CommPlus variable requests.
+ */
+export function encodeObjectQualifier(): Uint8Array {
+  const parentRid = concat(
+    encodeUint32Vlq(1257),
+    Uint8Array.of(0x00, DataType.RID),
+    encodeUint32(0)
+  );
+  const compositionAid = concat(
+    encodeUint32Vlq(1258),
+    Uint8Array.of(0x00, DataType.AID),
+    encodeUint32Vlq(0)
+  );
+  const keyQualifier = concat(
+    encodeUint32Vlq(1259),
+    Uint8Array.of(0x00, DataType.UDINT),
+    encodeUint32Vlq(0)
+  );
+  return concat(encodeUint32(1256), parentRid, compositionAid, keyQualifier, Uint8Array.of(0x00));
+}
+
+/**
+ * Encodes ItemAddress for S7CommPlus multi-variable access.
+ */
+export function encodeItemAddress(
+  accessArea: number,
+  accessSubArea: number,
+  lids: number[] = [],
+  symbolCrc = 0
+): readonly [Uint8Array, number] {
+  const parts: Uint8Array[] = [];
+  parts.push(encodeUint32Vlq(symbolCrc));
+  parts.push(encodeUint32Vlq(accessArea));
+  parts.push(encodeUint32Vlq(lids.length + 1));
+  parts.push(encodeUint32Vlq(accessSubArea));
+  for (const lid of lids) {
+    parts.push(encodeUint32Vlq(lid));
+  }
+  return [concat(...parts), 4 + lids.length] as const;
+}
+
+/**
+ * Encodes raw bytes as BLOB PValue.
+ */
+export function encodePvalueBlob(data: Uint8Array): Uint8Array {
+  return concat(Uint8Array.of(0x00, DataType.BLOB), encodeUint32Vlq(data.length), data);
+}
+
+const pvalueElementSize = (datatype: DataType): number => {
+  if (datatype === DataType.BOOL || datatype === DataType.USINT || datatype === DataType.BYTE || datatype === DataType.SINT) {
+    return 1;
+  }
+  if (datatype === DataType.UINT || datatype === DataType.WORD || datatype === DataType.INT) {
+    return 2;
+  }
+  if (datatype === DataType.REAL || datatype === DataType.RID) {
+    return 4;
+  }
+  if (datatype === DataType.LREAL || datatype === DataType.TIMESTAMP) {
+    return 8;
+  }
+  return 0;
+};
+
+/**
+ * Decodes PValue to raw bytes.
+ * Returns `[rawBytes, bytesConsumed]`.
+ */
+export function decodePvalueToBytes(data: Uint8Array, offset: number): readonly [Uint8Array, number] {
+  if (offset + 2 > data.length) {
+    throw new RangeError("Not enough data for PValue header");
+  }
+
+  const flags = data[offset]!;
+  const datatype = data[offset + 1]! as DataType;
+  let consumed = 2;
+  const isArray = (flags & 0x10) !== 0;
+
+  if (isArray) {
+    const [count, countConsumed] = decodeUint32Vlq(data, offset + consumed);
+    consumed += countConsumed;
+    const elemSize = pvalueElementSize(datatype);
+    if (elemSize > 0) {
+      const total = count * elemSize;
+      const raw = data.slice(offset + consumed, offset + consumed + total);
+      consumed += total;
+      return [raw, consumed] as const;
+    }
+    const chunks: Uint8Array[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const [val, c] = decodeUint32Vlq(data, offset + consumed);
+      consumed += c;
+      chunks.push(encodeUint32Vlq(val));
+    }
+    return [concat(...chunks), consumed] as const;
+  }
+
+  if (datatype === DataType.NULL) {
+    return [new Uint8Array(0), consumed] as const;
+  }
+  if (datatype === DataType.BOOL || datatype === DataType.USINT || datatype === DataType.BYTE || datatype === DataType.SINT) {
+    return [data.slice(offset + consumed, offset + consumed + 1), consumed + 1] as const;
+  }
+  if (datatype === DataType.UINT || datatype === DataType.WORD || datatype === DataType.INT) {
+    return [data.slice(offset + consumed, offset + consumed + 2), consumed + 2] as const;
+  }
+  if (datatype === DataType.UDINT || datatype === DataType.DWORD) {
+    const [val, c] = decodeUint32Vlq(data, offset + consumed);
+    consumed += c;
+    return [encodeUint32(val), consumed] as const;
+  }
+  if (datatype === DataType.DINT) {
+    const [val, c] = decodeInt32Vlq(data, offset + consumed);
+    consumed += c;
+    return [encodeInt32(val), consumed] as const;
+  }
+  if (datatype === DataType.REAL) {
+    return [data.slice(offset + consumed, offset + consumed + 4), consumed + 4] as const;
+  }
+  if (datatype === DataType.LREAL) {
+    return [data.slice(offset + consumed, offset + consumed + 8), consumed + 8] as const;
+  }
+  if (datatype === DataType.ULINT || datatype === DataType.LWORD) {
+    const [val, c] = decodeUint64Vlq(data, offset + consumed);
+    consumed += c;
+    return [encodeUint64(val), consumed] as const;
+  }
+  if (datatype === DataType.LINT || datatype === DataType.TIMESPAN) {
+    const [val, c] = decodeInt64Vlq(data, offset + consumed);
+    consumed += c;
+    return [encodeInt64(val), consumed] as const;
+  }
+  if (datatype === DataType.TIMESTAMP) {
+    return [data.slice(offset + consumed, offset + consumed + 8), consumed + 8] as const;
+  }
+  if (datatype === DataType.RID) {
+    return [data.slice(offset + consumed, offset + consumed + 4), consumed + 4] as const;
+  }
+  if (datatype === DataType.AID) {
+    const [val, c] = decodeUint32Vlq(data, offset + consumed);
+    consumed += c;
+    return [encodeUint32(val), consumed] as const;
+  }
+  if (datatype === DataType.BLOB || datatype === DataType.WSTRING) {
+    const [len, c] = decodeUint32Vlq(data, offset + consumed);
+    consumed += c;
+    const raw = data.slice(offset + consumed, offset + consumed + len);
+    consumed += len;
+    return [raw, consumed] as const;
+  }
+
+  throw new Error(`Unsupported PValue datatype: 0x${datatype.toString(16).padStart(2, "0")}`);
 }

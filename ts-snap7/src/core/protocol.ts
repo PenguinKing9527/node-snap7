@@ -47,3 +47,52 @@ export enum DataType {
   STRUCT = 0x17,
   S7STRING = 0x19
 }
+
+/**
+ * S7CommPlus function codes used by request/response headers.
+ */
+export enum FunctionCode {
+  CREATE_OBJECT = 0x04ca,
+  SET_MULTI_VARIABLES = 0x0542,
+  GET_MULTI_VARIABLES = 0x054c,
+  INIT_SSL = 0x05b3
+}
+
+/**
+ * S7CommPlus object model element identifiers.
+ */
+export enum ElementID {
+  START_OF_OBJECT = 0xa1,
+  TERMINATING_OBJECT = 0xa2,
+  ATTRIBUTE = 0xa3
+}
+
+/**
+ * Well-known object identifiers used during session setup.
+ */
+export enum ObjectId {
+  GET_NEW_RID_ON_SERVER = 211,
+  CLASS_SUBSCRIPTIONS = 255,
+  OBJECT_SERVER_SESSION_CONTAINER = 285,
+  CLASS_SERVER_SESSION = 287,
+  OBJECT_NULL_SERVER_SESSION = 288,
+  SERVER_SESSION_CLIENT_RID = 300
+}
+
+/**
+ * Well-known IDs for variable access structures.
+ */
+export enum Ids {
+  DB_VALUE_ACTUAL = 2550,
+  OBJECT_QUALIFIER = 1256,
+  PARENT_RID = 1257,
+  COMPOSITION_AID = 1258,
+  KEY_QUALIFIER = 1259,
+  DB_ACCESS_AREA_BASE = 0x8a0e0000
+}
+
+/**
+ * Default TSAP values for S7CommPlus connections.
+ */
+export const S7COMMPLUS_LOCAL_TSAP = 0x0600;
+export const S7COMMPLUS_REMOTE_TSAP = new TextEncoder().encode("SIMATIC-ROOT-HMI");
