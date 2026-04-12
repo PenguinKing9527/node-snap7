@@ -75,6 +75,55 @@ export enum WordLen {
 }
 
 /**
+ * Classic S7 block type identifiers used by block-catalog APIs.
+ */
+export enum Block {
+  OB = 0x38,
+  DB = 0x41,
+  SDB = 0x42,
+  FC = 0x43,
+  SFC = 0x44,
+  FB = 0x45,
+  SFB = 0x46
+}
+
+/**
+ * Block-count summary returned by `listBlocks`.
+ */
+export interface BlocksList {
+  OBCount: number;
+  FBCount: number;
+  FCCount: number;
+  SFBCount: number;
+  SFCCount: number;
+  DBCount: number;
+  SDBCount: number;
+}
+
+/**
+ * Block metadata compatible with python-snap7 `TS7BlockInfo`.
+ *
+ * String fields are plain JS strings in this TypeScript port.
+ */
+export interface TS7BlockInfo {
+  BlkType: number;
+  BlkNumber: number;
+  BlkLang: number;
+  BlkFlags: number;
+  MC7Size: number;
+  LoadSize: number;
+  LocalData: number;
+  SBBLength: number;
+  CheckSum: number;
+  Version: number;
+  CodeDate: string;
+  IntfDate: string;
+  Author: string;
+  Family: string;
+  Header: string;
+}
+
+/**
  * Connection options accepted by `AsyncClient.connect`.
  * Defaults are intentionally aligned with python-snap7 behavior.
  */

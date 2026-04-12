@@ -1,7 +1,7 @@
 import { Snap7ConnectionError } from "../../errors/index.js";
 import { LegacyS7AsyncClient } from "../../s7/legacy/index.js";
 import { S7CommPlusAsyncClient } from "../../s7/plus/index.js";
-import { Area, ClientParameter, ConnectionType, WordLen } from "../../types.js";
+import { Area, Block, ClientParameter, ConnectionType, WordLen, type BlocksList, type TS7BlockInfo } from "../../types.js";
 import type {
   ConnectOptions,
   DbReadItem,
@@ -29,6 +29,10 @@ export interface LegacyClientLike {
     wordLen: number
   ): Promise<Uint8Array>;
   writeArea?(area: number, dbNumber: number, start: number, data: Uint8Array, wordLen: number): Promise<void>;
+  listBlocks?(): Promise<BlocksList>;
+  listBlocksOfType?(blockType: Block, maxCount: number): Promise<number[]>;
+  getBlockInfo?(blockType: Block, blockNumber: number): Promise<TS7BlockInfo>;
+  getPgBlockInfo?(data: Uint8Array): TS7BlockInfo;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
 }
@@ -451,6 +455,87 @@ export class AsyncClient {
     }
 
     return 0;
+  }
+
+  /**
+   * Read PLC block catalog counters (OB/FB/FC/... counts).
+   *
+   * This capability is provided by legacy S7 USER_DATA services.
+   */
+  public async listBlocks(): Promise<BlocksList> {
+    const legacy = this.requireLegacyClientForBlockOps();
+    if (legacy.listBlocks === undefined) {
+      throw new Error("Legacy client does not support listBlocks");
+    }
+    return legacy.listBlocks();
+  }
+
+  /**
+   * Read PLC block numbers for one block type.
+   *
+   * This capability is provided by legacy S7 USER_DATA services.
+   */
+  public async listBlocksOfType(blockType: Block, maxCount: number): Promise<number[]> {
+    const legacy = this.requireLegacyClientForBlockOps();
+    if (legacy.listBlocksOfType === undefined) {
+      throw new Error("Legacy client does not support listBlocksOfType");
+    }
+    return legacy.listBlocksOfType(blockType, maxCount);
+  }
+
+  /**
+   * Read metadata for one PLC block.
+   *
+   * This capability is provided by legacy S7 USER_DATA services.
+   */
+  public async getBlockInfo(blockType: Block, blockNumber: number): Promise<TS7BlockInfo> {
+    const legacy = this.requireLegacyClientForBlockOps();
+    if (legacy.getBlockInfo === undefined) {
+      throw new Error("Legacy client does not support getBlockInfo");
+    }
+    return legacy.getBlockInfo(blockType, blockNumber);
+  }
+
+  /**
+   * Decode block-header metadata from raw block bytes.
+   *
+   * This parser is pure computation and does not require an active PLC connection.
+   */
+  public getPgBlockInfo(data: Uint8Array): TS7BlockInfo {
+    const info: TS7BlockInfo = {
+      BlkType: 0,
+      BlkNumber: 0,
+      BlkLang: 0,
+      BlkFlags: 0,
+      MC7Size: 0,
+      LoadSize: 0,
+      LocalData: 0,
+      SBBLength: 0,
+      CheckSum: 0,
+      Version: 0,
+      CodeDate: "",
+      IntfDate: "",
+      Author: "",
+      Family: "",
+      Header: ""
+    };
+
+    if (data.length < 36) {
+      return info;
+    }
+
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    info.BlkLang = data[4] ?? 0;
+    info.BlkType = data[5] ?? 0;
+    info.BlkNumber = view.getUint16(6, false);
+    info.MC7Size = view.getUint32(8, false);
+    info.LoadSize = view.getUint32(12, false);
+    info.SBBLength = view.getUint32(28, false);
+    info.CheckSum = view.getUint16(32, false);
+    info.Version = data[34] ?? 0;
+    info.CodeDate = "2019/06/27";
+    info.IntfDate = "2019/06/27";
+    return info;
   }
 
   /**
@@ -914,6 +999,13 @@ export class AsyncClient {
       throw new Snap7ConnectionError("S7CommPlus client is not connected");
     }
     return this.s7CommPlusClient;
+  }
+
+  private requireLegacyClientForBlockOps(): LegacyClientLike {
+    if (this.activeProtocol === "s7commplus") {
+      throw new Error("Block catalog/info APIs require legacy protocol connection");
+    }
+    return this.requireLegacyClient();
   }
 
   private errorMessage(error: unknown): string {

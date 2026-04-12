@@ -1,4 +1,5 @@
 import { Snap7ConnectionError, Snap7ProtocolError } from "../../errors/index.js";
+import { Block, type BlocksList, type TS7BlockInfo } from "../../types.js";
 import { AsyncIsoTransport } from "../../transport/index.js";
 import type { TransportConnectOptions, TransportRequestOptions } from "../../transport/types.js";
 import { LegacyS7Protocol, S7Area, S7WordLen } from "./protocol.js";
@@ -208,10 +209,184 @@ export class LegacyS7AsyncClient {
     this.protocol.checkWriteResponse(parsed);
   }
 
+  /**
+   * List all block counters available on the PLC.
+   */
+  public async listBlocks(options: TransportRequestOptions = {}): Promise<BlocksList> {
+    this.ensureConnected();
+
+    const request = this.protocol.buildListBlocksRequest();
+    const responsePdu = await this.exchange(request, options);
+    const parsed = this.protocol.parseResponse(responsePdu);
+    this.ensureSuccessReturnCode(parsed.returnCode, "List blocks");
+
+    const counts = this.protocol.parseListBlocksResponse(parsed);
+    return {
+      OBCount: counts.OBCount ?? 0,
+      FBCount: counts.FBCount ?? 0,
+      FCCount: counts.FCCount ?? 0,
+      SFBCount: counts.SFBCount ?? 0,
+      SFCCount: counts.SFCCount ?? 0,
+      DBCount: counts.DBCount ?? 0,
+      SDBCount: counts.SDBCount ?? 0
+    };
+  }
+
+  /**
+   * List block numbers of a specific block type.
+   *
+   * The legacy USER_DATA operation may return data in multiple fragments.
+   * We accumulate all fragments before decoding block numbers.
+   */
+  public async listBlocksOfType(
+    blockType: Block,
+    maxCount: number,
+    options: TransportRequestOptions = {}
+  ): Promise<number[]> {
+    this.ensureConnected();
+
+    const request = this.protocol.buildListBlocksOfTypeRequest(this.toLegacyBlockTypeCode(blockType));
+    const firstResponse = await this.exchange(request, options);
+    let parsed = this.protocol.parseResponse(firstResponse);
+    this.ensureSuccessReturnCode(parsed.returnCode, "List blocks of type");
+
+    let accumulated = parsed.data ?? new Uint8Array(0);
+    let lastDataUnit = parsed.parameters?.lastDataUnit ?? 0x00;
+    let sequenceNumber = parsed.parameters?.sequenceNumber ?? 0x00;
+    const group = parsed.parameters?.group ?? 0x03;
+    const subfunction = parsed.parameters?.subfunction ?? 0x02;
+
+    for (let i = 0; i < 100 && lastDataUnit !== 0x00; i += 1) {
+      const followup = this.protocol.buildUserDataFollowupRequest(group, subfunction, sequenceNumber);
+      const followupPdu = await this.exchange(followup, options);
+      parsed = this.protocol.parseResponse(followupPdu);
+      this.ensureSuccessReturnCode(parsed.returnCode, "List blocks of type follow-up");
+      accumulated = this.concatChunks(accumulated, parsed.data ?? new Uint8Array(0));
+      lastDataUnit = parsed.parameters?.lastDataUnit ?? 0x00;
+      sequenceNumber = parsed.parameters?.sequenceNumber ?? sequenceNumber;
+    }
+
+    const blockNumbers = this.protocol.parseListBlocksOfTypeResponse({
+      sequence: parsed.sequence,
+      parameterLength: 0,
+      dataLength: accumulated.length,
+      returnCode: 0xff,
+      data: accumulated
+    });
+    return blockNumbers.slice(0, Math.max(0, maxCount));
+  }
+
+  /**
+   * Get metadata for a specific block.
+   */
+  public async getBlockInfo(
+    blockType: Block,
+    blockNumber: number,
+    options: TransportRequestOptions = {}
+  ): Promise<TS7BlockInfo> {
+    this.ensureConnected();
+
+    const request = this.protocol.buildGetBlockInfoRequest(this.toLegacyBlockTypeCode(blockType), blockNumber);
+    const responsePdu = await this.exchange(request, options);
+    const parsed = this.protocol.parseResponse(responsePdu);
+    this.ensureSuccessReturnCode(parsed.returnCode, "Get block info");
+
+    const info = this.protocol.parseGetBlockInfoResponse(parsed);
+    return {
+      BlkType: info.block_type,
+      BlkNumber: info.block_number,
+      BlkLang: info.block_lang,
+      BlkFlags: info.block_flags,
+      MC7Size: info.mc7_size,
+      LoadSize: info.load_size,
+      LocalData: info.local_data,
+      SBBLength: info.sbb_length,
+      CheckSum: info.checksum,
+      Version: info.version,
+      CodeDate: this.protocol.bytesToAscii(info.code_date).slice(0, 10),
+      IntfDate: this.protocol.bytesToAscii(info.intf_date).slice(0, 10),
+      Author: this.protocol.bytesToAscii(info.author).slice(0, 8),
+      Family: this.protocol.bytesToAscii(info.family).slice(0, 8),
+      Header: this.protocol.bytesToAscii(info.header).slice(0, 8)
+    };
+  }
+
+  /**
+   * Decode block header information from raw block bytes.
+   *
+   * This mirrors python-snap7 ClientMixin.get_pg_block_info behavior.
+   */
+  public getPgBlockInfo(data: Uint8Array): TS7BlockInfo {
+    const info: TS7BlockInfo = {
+      BlkType: 0,
+      BlkNumber: 0,
+      BlkLang: 0,
+      BlkFlags: 0,
+      MC7Size: 0,
+      LoadSize: 0,
+      LocalData: 0,
+      SBBLength: 0,
+      CheckSum: 0,
+      Version: 0,
+      CodeDate: "",
+      IntfDate: "",
+      Author: "",
+      Family: "",
+      Header: ""
+    };
+
+    if (data.length < 36) {
+      return info;
+    }
+
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    info.BlkLang = data[4] ?? 0;
+    info.BlkType = data[5] ?? 0;
+    info.BlkNumber = view.getUint16(6, false);
+    info.MC7Size = view.getUint32(8, false);
+    info.LoadSize = view.getUint32(12, false);
+    info.SBBLength = view.getUint32(28, false);
+    info.CheckSum = view.getUint16(32, false);
+    info.Version = data[34] ?? 0;
+    // python-snap7 uses deterministic placeholder dates in this helper.
+    info.CodeDate = "2019/06/27";
+    info.IntfDate = "2019/06/27";
+    return info;
+  }
+
   private ensureConnected(): void {
     if (!this.connectedValue) {
       throw new Snap7ConnectionError("Legacy S7 client is not connected");
     }
+  }
+
+  private ensureSuccessReturnCode(returnCode: number | undefined, operation: string): void {
+    if (returnCode !== 0xff) {
+      const code = (returnCode ?? 0).toString(16).padStart(2, "0");
+      throw new Snap7ProtocolError(`${operation} failed with return code 0x${code}`);
+    }
+  }
+
+  private toLegacyBlockTypeCode(blockType: Block): number {
+    if (
+      blockType === Block.OB ||
+      blockType === Block.DB ||
+      blockType === Block.SDB ||
+      blockType === Block.FC ||
+      blockType === Block.SFC ||
+      blockType === Block.FB ||
+      blockType === Block.SFB
+    ) {
+      return blockType;
+    }
+    return Block.DB;
+  }
+
+  private concatChunks(first: Uint8Array, second: Uint8Array): Uint8Array {
+    const out = new Uint8Array(first.length + second.length);
+    out.set(first, 0);
+    out.set(second, first.length);
+    return out;
   }
 
   private async exchange(pdu: Uint8Array, options: TransportRequestOptions): Promise<Uint8Array> {

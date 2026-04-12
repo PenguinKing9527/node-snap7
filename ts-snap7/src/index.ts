@@ -5,14 +5,16 @@
  * utilities so users can choose ergonomic API or protocol-level control.
  */
 export { AsyncClient } from "./client/async/async-client.js";
-export { Area, ClientParameter, ConnectionType, WordLen } from "./types.js";
+export { Area, Block, ClientParameter, ConnectionType, WordLen } from "./types.js";
 export type {
+  BlocksList,
   ConnectOptions,
   DbReadItem,
   MultiVarReadItem,
   MultiVarReadResult,
   MultiVarWriteItem,
-  ProtocolSelection
+  ProtocolSelection,
+  TS7BlockInfo
 } from "./types.js";
 
 export {
@@ -89,6 +91,7 @@ export {
   LegacyS7AsyncClient,
   LegacyS7Protocol,
   S7Area,
+  S7BlockSubfunction,
   S7Function,
   S7PduType,
   S7WordLen,

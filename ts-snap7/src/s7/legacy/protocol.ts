@@ -1,18 +1,17 @@
 /**
- * Minimal Legacy S7 protocol implementation for async DB read/write.
+ * Legacy S7 protocol helper used by the async client implementation.
  *
- * Scope of this module:
- * - setup communication request/response
- * - single-item DB read request + data extraction
- * - single-item DB write request + write acknowledgement checks
- *
- * The implementation intentionally follows python-snap7 packet layout.
+ * This module intentionally mirrors the python-snap7 packet layout for:
+ * - setup communication
+ * - area read/write
+ * - USER_DATA block catalog/block-info calls
  */
 
 export enum S7PduType {
   REQUEST = 0x01,
   ACK = 0x02,
-  ACK_DATA = 0x03
+  ACK_DATA = 0x03,
+  USERDATA = 0x07
 }
 
 export enum S7Function {
@@ -43,15 +42,45 @@ export enum S7WordLen {
   TIMER = 0x1d
 }
 
+export enum S7BlockSubfunction {
+  LIST_ALL = 0x01,
+  LIST_BY_TYPE = 0x02,
+  BLOCK_INFO = 0x03
+}
+
+export interface ParsedGetBlockInfo {
+  block_type: number;
+  block_number: number;
+  block_lang: number;
+  block_flags: number;
+  mc7_size: number;
+  load_size: number;
+  local_data: number;
+  sbb_length: number;
+  checksum: number;
+  version: number;
+  code_date: Uint8Array;
+  intf_date: Uint8Array;
+  author: Uint8Array;
+  family: Uint8Array;
+  header: Uint8Array;
+}
+
 export interface LegacyS7Response {
   sequence: number;
   parameterLength: number;
   dataLength: number;
   functionCode?: number;
   returnCode?: number;
+  transportSize?: number;
   data?: Uint8Array;
   parameters?: {
     pduLength?: number;
+    group?: number;
+    subfunction?: number;
+    sequenceNumber?: number;
+    lastDataUnit?: number;
+    errorCode?: number;
   };
 }
 
@@ -194,10 +223,147 @@ export class LegacyS7Protocol {
   }
 
   /**
-   * Parses ACK/ACK_DATA response.
+   * Builds USER_DATA request for list-blocks operation.
+   */
+  public buildListBlocksRequest(): Uint8Array {
+    return this.buildBlockUserDataRequest(S7BlockSubfunction.LIST_ALL, new Uint8Array(0), 0x00);
+  }
+
+  /**
+   * Builds USER_DATA request for list-blocks-of-type operation.
+   */
+  public buildListBlocksOfTypeRequest(blockType: number): Uint8Array {
+    return this.buildBlockUserDataRequest(S7BlockSubfunction.LIST_BY_TYPE, Uint8Array.of(0x30, blockType, 0x0a, 0x00), 0x00);
+  }
+
+  /**
+   * Builds USER_DATA request for get-block-info operation.
+   */
+  public buildGetBlockInfoRequest(blockType: number, blockNumber: number): Uint8Array {
+    const blockNumberAscii = String(blockNumber).padStart(5, "0");
+    const payload = new Uint8Array(8);
+    payload[0] = 0x30;
+    payload[1] = blockType & 0xff;
+    payload[2] = 0x41; // ASCII 'A'
+    for (let i = 0; i < 5; i += 1) {
+      payload[3 + i] = blockNumberAscii.charCodeAt(i);
+    }
+    return this.buildBlockUserDataRequest(S7BlockSubfunction.BLOCK_INFO, payload, 0x00);
+  }
+
+  /**
+   * Builds USER_DATA follow-up request for multi-packet block answers.
+   */
+  public buildUserDataFollowupRequest(group: number, subfunction: number, sequenceNumber: number): Uint8Array {
+    const typeGroup = 0x40 | (group & 0x0f);
+    const params = Uint8Array.of(0x00, 0x01, 0x12, 0x04, 0x11, typeGroup, subfunction, sequenceNumber & 0xff);
+    const dataSection = Uint8Array.of(0x0a, 0x00, 0x00, 0x00);
+    return this.buildUserDataPdu(params, dataSection);
+  }
+
+  /**
+   * Parses block counts from a list-blocks response.
+   */
+  public parseListBlocksResponse(response: LegacyS7Response): Record<string, number> {
+    const out: Record<string, number> = {
+      OBCount: 0,
+      FBCount: 0,
+      FCCount: 0,
+      SFBCount: 0,
+      SFCCount: 0,
+      DBCount: 0,
+      SDBCount: 0
+    };
+    const raw = response.data ?? new Uint8Array(0);
+    const typeToName = new Map<number, keyof typeof out>([
+      [0x38, "OBCount"],
+      [0x41, "DBCount"],
+      [0x42, "SDBCount"],
+      [0x43, "FCCount"],
+      [0x44, "SFCCount"],
+      [0x45, "FBCount"],
+      [0x46, "SFBCount"]
+    ]);
+
+    for (let offset = 0; offset + 4 <= raw.length; offset += 4) {
+      const indicator = raw[offset] ?? 0;
+      const blockType = raw[offset + 1] ?? 0;
+      if (indicator !== 0x30) {
+        continue;
+      }
+      const field = typeToName.get(blockType);
+      if (field === undefined) {
+        continue;
+      }
+      out[field] = new DataView(raw.buffer, raw.byteOffset + offset + 2, 2).getUint16(0, false);
+    }
+    return out;
+  }
+
+  /**
+   * Parses block numbers from a list-blocks-of-type response payload.
+   */
+  public parseListBlocksOfTypeResponse(response: LegacyS7Response): number[] {
+    const result: number[] = [];
+    const raw = response.data ?? new Uint8Array(0);
+    for (let offset = 0; offset + 4 <= raw.length; offset += 4) {
+      const value = new DataView(raw.buffer, raw.byteOffset + offset, 2).getUint16(0, false);
+      result.push(value);
+    }
+    return result;
+  }
+
+  /**
+   * Parses block metadata from USER_DATA get-block-info payload.
+   */
+  public parseGetBlockInfoResponse(response: LegacyS7Response): ParsedGetBlockInfo {
+    const raw = response.data ?? new Uint8Array(0);
+    const empty: ParsedGetBlockInfo = {
+      block_type: 0,
+      block_number: 0,
+      block_lang: 0,
+      block_flags: 0,
+      mc7_size: 0,
+      load_size: 0,
+      local_data: 0,
+      sbb_length: 0,
+      checksum: 0,
+      version: 0,
+      code_date: new Uint8Array(0),
+      intf_date: new Uint8Array(0),
+      author: new Uint8Array(0),
+      family: new Uint8Array(0),
+      header: new Uint8Array(0)
+    };
+
+    if (raw.length < 78) {
+      return empty;
+    }
+
+    return {
+      block_type: raw[1] ?? 0,
+      block_number: new DataView(raw.buffer, raw.byteOffset + 12, 2).getUint16(0, false),
+      block_lang: raw[10] ?? 0,
+      block_flags: raw[9] ?? 0,
+      mc7_size: new DataView(raw.buffer, raw.byteOffset + 40, 2).getUint16(0, false),
+      load_size: new DataView(raw.buffer, raw.byteOffset + 14, 4).getUint32(0, false),
+      local_data: new DataView(raw.buffer, raw.byteOffset + 38, 2).getUint16(0, false),
+      sbb_length: new DataView(raw.buffer, raw.byteOffset + 34, 2).getUint16(0, false),
+      checksum: new DataView(raw.buffer, raw.byteOffset + 68, 2).getUint16(0, false),
+      version: raw[66] ?? 0,
+      code_date: raw.slice(22, 28),
+      intf_date: raw.slice(28, 34),
+      author: raw.slice(42, 50),
+      family: raw.slice(50, 58),
+      header: raw.slice(58, 66)
+    };
+  }
+
+  /**
+   * Parses ACK/ACK_DATA/USER_DATA responses.
    */
   public parseResponse(pdu: Uint8Array): LegacyS7Response {
-    if (pdu.length < 12) {
+    if (pdu.length < 10) {
       throw new Error("PDU too short for S7 response");
     }
 
@@ -207,21 +373,29 @@ export class LegacyS7Protocol {
     if (protocolId !== 0x32) {
       throw new Error(`Invalid S7 protocol ID: 0x${protocolId.toString(16).padStart(2, "0")}`);
     }
-    if (pduType !== S7PduType.ACK && pduType !== S7PduType.ACK_DATA) {
+    if (pduType !== S7PduType.ACK && pduType !== S7PduType.ACK_DATA && pduType !== S7PduType.USERDATA) {
       throw new Error(`Unexpected S7 response PDU type: 0x${pduType.toString(16).padStart(2, "0")}`);
     }
 
     const sequence = view.getUint16(4, false);
     const parameterLength = view.getUint16(6, false);
     const dataLength = view.getUint16(8, false);
-    const errorClass = view.getUint8(10);
-    const errorCode = view.getUint8(11);
-    if (errorClass !== 0 || errorCode !== 0) {
-      throw new Error(`S7 protocol error class=0x${errorClass.toString(16)} code=0x${errorCode.toString(16)}`);
+
+    // USER_DATA responses have a 10-byte header, ACK/ACK_DATA include class/code bytes.
+    let offset = 10;
+    if (pduType !== S7PduType.USERDATA) {
+      if (pdu.length < 12) {
+        throw new Error("PDU too short for ACK/ACK_DATA response");
+      }
+      const errorClass = view.getUint8(10);
+      const errorCode = view.getUint8(11);
+      if (errorClass !== 0 || errorCode !== 0) {
+        throw new Error(`S7 protocol error class=0x${errorClass.toString(16)} code=0x${errorCode.toString(16)}`);
+      }
+      offset = 12;
     }
 
     const response: LegacyS7Response = { sequence, parameterLength, dataLength };
-    let offset = 12;
 
     if (parameterLength > 0) {
       const params = pdu.slice(offset, offset + parameterLength);
@@ -233,6 +407,14 @@ export class LegacyS7Protocol {
         response.parameters = {
           pduLength: new DataView(params.buffer, params.byteOffset, params.length).getUint16(6, false)
         };
+      } else if (this.isUserDataResponseParameters(params)) {
+        response.parameters = {
+          group: (params[5] ?? 0) & 0x0f,
+          subfunction: params[6] ?? 0,
+          sequenceNumber: params[7] ?? 0,
+          lastDataUnit: params[9] ?? 0,
+          errorCode: new DataView(params.buffer, params.byteOffset + 10, 2).getUint16(0, false)
+        };
       }
       offset += parameterLength;
     }
@@ -241,11 +423,13 @@ export class LegacyS7Protocol {
       const section = pdu.slice(offset, offset + dataLength);
       if (section.length >= 4) {
         const returnCode = section[0];
+        const transportSize = section[1] ?? 0;
         if (returnCode !== undefined) {
           response.returnCode = returnCode;
         }
-        const bitLength = new DataView(section.buffer, section.byteOffset, section.length).getUint16(2, false);
-        const bytesLength = Math.ceil(bitLength / 8);
+        response.transportSize = transportSize;
+        const declaredLength = new DataView(section.buffer, section.byteOffset + 2, 2).getUint16(0, false);
+        const bytesLength = transportSize === 0x00 || transportSize === 0x09 ? declaredLength : Math.ceil(declaredLength / 8);
         response.data = section.slice(4, 4 + bytesLength);
       } else if (section.length === 1) {
         const returnCode = section[0];
@@ -274,10 +458,50 @@ export class LegacyS7Protocol {
    */
   public checkWriteResponse(response: LegacyS7Response): void {
     if (response.returnCode !== undefined && response.returnCode !== 0xff) {
-      throw new Error(
-        `Write failed with return code 0x${(response.returnCode ?? 0).toString(16).padStart(2, "0")}`
-      );
+      throw new Error(`Write failed with return code 0x${(response.returnCode ?? 0).toString(16).padStart(2, "0")}`);
     }
+  }
+
+  public bytesToAscii(input: Uint8Array): string {
+    let out = "";
+    for (const value of input) {
+      if (value === 0) {
+        continue;
+      }
+      out += String.fromCharCode(value);
+    }
+    return out.trim();
+  }
+
+  private buildBlockUserDataRequest(subfunction: S7BlockSubfunction, payload: Uint8Array, dataRef: number): Uint8Array {
+    const params = Uint8Array.of(0x00, 0x01, 0x12, 0x04, 0x11, 0x43, subfunction, dataRef & 0xff);
+    const dataSection = new Uint8Array(4 + payload.length);
+    dataSection[0] = 0x0a;
+    dataSection[1] = 0x00;
+    new DataView(dataSection.buffer).setUint16(2, payload.length, false);
+    dataSection.set(payload, 4);
+    return this.buildUserDataPdu(params, dataSection);
+  }
+
+  private buildUserDataPdu(params: Uint8Array, dataSection: Uint8Array): Uint8Array {
+    const header = new Uint8Array(10);
+    const hv = new DataView(header.buffer);
+    hv.setUint8(0, 0x32);
+    hv.setUint8(1, S7PduType.USERDATA);
+    hv.setUint16(2, 0x0000, false);
+    hv.setUint16(4, this.nextSequence(), false);
+    hv.setUint16(6, params.length, false);
+    hv.setUint16(8, dataSection.length, false);
+
+    const out = new Uint8Array(header.length + params.length + dataSection.length);
+    out.set(header, 0);
+    out.set(params, header.length);
+    out.set(dataSection, header.length + params.length);
+    return out;
+  }
+
+  private isUserDataResponseParameters(params: Uint8Array): boolean {
+    return params.length >= 12 && params[0] === 0x00 && params[2] === 0x12 && params[4] === 0x12;
   }
 
   private dataTransportSize(wordLen: S7WordLen): number {
