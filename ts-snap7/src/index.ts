@@ -67,5 +67,14 @@ export {
   transportStatus
 } from "./transport/index.js";
 export type { SocketFactory, SocketLike, TransportConnectOptions, TransportRequestOptions, TransportState } from "./transport/index.js";
-export { legacyS7Status } from "./s7/legacy/index.js";
+export {
+  LegacyS7AsyncClient,
+  LegacyS7Protocol,
+  S7Area,
+  S7Function,
+  S7PduType,
+  S7WordLen,
+  legacyS7Status
+} from "./s7/legacy/index.js";
+export type { LegacyS7Response, LegacyTransport } from "./s7/legacy/index.js";
 export { s7CommPlusStatus } from "./s7/plus/index.js";

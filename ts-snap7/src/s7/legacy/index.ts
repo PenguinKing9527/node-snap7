@@ -10,6 +10,11 @@ export interface LegacyS7Status {
  * Legacy S7 implementation status, updated when Task 4 is completed.
  */
 export const legacyS7Status: LegacyS7Status = {
-  ready: false,
-  note: "Legacy S7 async path will be implemented in Task 4."
+  ready: true,
+  note: "Legacy S7 async minimal DB read/write path is implemented in Task 4."
 };
+
+export { LegacyS7AsyncClient } from "./legacy-async-client.js";
+export { LegacyS7Protocol, S7Area, S7Function, S7PduType, S7WordLen } from "./protocol.js";
+export type { LegacyS7Response } from "./protocol.js";
+export type { LegacyTransport } from "./legacy-async-client.js";
