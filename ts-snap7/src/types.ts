@@ -94,3 +94,35 @@ export interface DbReadItem {
   start: number;
   size: number;
 }
+
+/**
+ * Input item for multi-variable read operations.
+ */
+export interface MultiVarReadItem {
+  area: Area;
+  dbNumber?: number;
+  start: number;
+  size: number;
+  wordLen?: WordLen;
+}
+
+/**
+ * Input item for multi-variable write operations.
+ */
+export interface MultiVarWriteItem {
+  area: Area;
+  dbNumber?: number;
+  start: number;
+  data: Uint8Array;
+  wordLen?: WordLen;
+}
+
+/**
+ * Result for multi-variable read operations.
+ *
+ * `result` follows python-snap7 style where 0 represents success.
+ */
+export interface MultiVarReadResult {
+  result: number;
+  items: Uint8Array[];
+}

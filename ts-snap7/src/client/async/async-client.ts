@@ -2,7 +2,14 @@ import { Snap7ConnectionError } from "../../errors/index.js";
 import { LegacyS7AsyncClient } from "../../s7/legacy/index.js";
 import { S7CommPlusAsyncClient } from "../../s7/plus/index.js";
 import { Area, ClientParameter, ConnectionType, WordLen } from "../../types.js";
-import type { ConnectOptions, DbReadItem, ProtocolSelection } from "../../types.js";
+import type {
+  ConnectOptions,
+  DbReadItem,
+  MultiVarReadItem,
+  MultiVarReadResult,
+  MultiVarWriteItem,
+  ProtocolSelection
+} from "../../types.js";
 
 type ActiveProtocol = Exclude<ProtocolSelection, "auto">;
 
@@ -60,6 +67,7 @@ export interface AsyncClientDependencies {
  * delegating actual packet-level work to task-specific clients.
  */
 export class AsyncClient {
+  private static readonly MAX_VARS = 20;
   private preferredProtocol: ProtocolSelection;
   private activeProtocol: ActiveProtocol | null;
   private readonly createLegacyClient: () => LegacyClientLike;
@@ -377,6 +385,72 @@ export class AsyncClient {
       this.recordFailure(startMs, this.classifyErrorCode(error));
       throw error;
     }
+  }
+
+  /**
+   * Read multiple variables in one logical operation.
+   *
+   * Compatibility behavior:
+   * - empty input returns `{ result: 0, items: [] }`
+   * - more than MAX_VARS (20) raises a `ValueError`-style error
+   */
+  public async readMultiVars(items: MultiVarReadItem[]): Promise<MultiVarReadResult> {
+    if (items.length === 0) {
+      return {
+        result: 0,
+        items: []
+      };
+    }
+
+    if (items.length > AsyncClient.MAX_VARS) {
+      throw new Error(`Too many items: ${items.length} exceeds MAX_VARS (${AsyncClient.MAX_VARS})`);
+    }
+
+    const out: Uint8Array[] = [];
+    for (const item of items) {
+      const data = await this.readArea(
+        item.area,
+        item.dbNumber ?? 0,
+        item.start,
+        item.size,
+        item.wordLen ?? this.defaultWordLenForArea(item.area)
+      );
+      out.push(data);
+    }
+
+    return {
+      result: 0,
+      items: out
+    };
+  }
+
+  /**
+   * Write multiple variables in one logical operation.
+   *
+   * Compatibility behavior:
+   * - empty input returns 0
+   * - more than MAX_VARS (20) raises a `ValueError`-style error
+   */
+  public async writeMultiVars(items: MultiVarWriteItem[]): Promise<number> {
+    if (items.length === 0) {
+      return 0;
+    }
+
+    if (items.length > AsyncClient.MAX_VARS) {
+      throw new Error(`Too many items: ${items.length} exceeds MAX_VARS (${AsyncClient.MAX_VARS})`);
+    }
+
+    for (const item of items) {
+      await this.writeArea(
+        item.area,
+        item.dbNumber ?? 0,
+        item.start,
+        item.data,
+        item.wordLen ?? this.defaultWordLenForArea(item.area)
+      );
+    }
+
+    return 0;
   }
 
   /**

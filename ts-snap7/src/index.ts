@@ -6,7 +6,14 @@
  */
 export { AsyncClient } from "./client/async/async-client.js";
 export { Area, ClientParameter, ConnectionType, WordLen } from "./types.js";
-export type { ConnectOptions, DbReadItem, ProtocolSelection } from "./types.js";
+export type {
+  ConnectOptions,
+  DbReadItem,
+  MultiVarReadItem,
+  MultiVarReadResult,
+  MultiVarWriteItem,
+  ProtocolSelection
+} from "./types.js";
 
 export {
   Snap7ConnectionError,
