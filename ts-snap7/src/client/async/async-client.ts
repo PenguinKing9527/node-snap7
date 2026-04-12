@@ -380,6 +380,242 @@ export class AsyncClient {
   }
 
   /**
+   * Read an entire DB or an explicitly sized prefix.
+   *
+   * When `size <= 0`, this uses a conservative compatibility fallback
+   * of 65536 bytes because block-info based auto-size detection is not
+   * available yet in the staged implementation.
+   */
+  public dbGet(dbNumber: number, size = 0): Promise<Uint8Array> {
+    const readSize = size > 0 ? size : 65536;
+    return this.dbRead(dbNumber, 0, readSize);
+  }
+
+  /**
+   * Fill a DB with one byte value.
+   */
+  public dbFill(dbNumber: number, filler: number, size = 0): Promise<void> {
+    const writeSize = size > 0 ? size : 65536;
+    const data = new Uint8Array(writeSize);
+    data.fill(filler & 0xff);
+    return this.dbWrite(dbNumber, 0, data);
+  }
+
+  /**
+   * Read a single bit from a DB byte.
+   */
+  public async dbReadBool(dbNumber: number, byteOffset: number, bitOffset: number): Promise<boolean> {
+    this.ensureBitOffset(bitOffset);
+    const data = await this.dbRead(dbNumber, byteOffset, 1);
+    return ((data[0] ?? 0) & (1 << bitOffset)) !== 0;
+  }
+
+  /**
+   * Write a single bit while preserving other bits in the same byte.
+   */
+  public async dbWriteBool(dbNumber: number, byteOffset: number, bitOffset: number, value: boolean): Promise<void> {
+    this.ensureBitOffset(bitOffset);
+    const data = await this.dbRead(dbNumber, byteOffset, 1);
+    const current = data[0] ?? 0;
+    const updated = value ? current | (1 << bitOffset) : current & ~(1 << bitOffset);
+    await this.dbWrite(dbNumber, byteOffset, Uint8Array.of(updated));
+  }
+
+  /**
+   * Read a BYTE from DB.
+   */
+  public async dbReadByte(dbNumber: number, offset: number): Promise<number> {
+    const data = await this.dbRead(dbNumber, offset, 1);
+    return data[0] ?? 0;
+  }
+
+  /**
+   * Write a BYTE into DB.
+   */
+  public dbWriteByte(dbNumber: number, offset: number, value: number): Promise<void> {
+    return this.dbWrite(dbNumber, offset, Uint8Array.of(value & 0xff));
+  }
+
+  /**
+   * Read INT (16-bit signed big-endian) from DB.
+   */
+  public async dbReadInt(dbNumber: number, offset: number): Promise<number> {
+    const data = await this.dbRead(dbNumber, offset, 2);
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getInt16(0, false);
+  }
+
+  /**
+   * Write INT (16-bit signed big-endian) to DB.
+   */
+  public dbWriteInt(dbNumber: number, offset: number, value: number): Promise<void> {
+    const data = new Uint8Array(2);
+    new DataView(data.buffer).setInt16(0, value, false);
+    return this.dbWrite(dbNumber, offset, data);
+  }
+
+  /**
+   * Read UINT (16-bit unsigned big-endian) from DB.
+   */
+  public async dbReadUint(dbNumber: number, offset: number): Promise<number> {
+    const data = await this.dbRead(dbNumber, offset, 2);
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(0, false);
+  }
+
+  /**
+   * Write UINT (16-bit unsigned big-endian) to DB.
+   */
+  public dbWriteUint(dbNumber: number, offset: number, value: number): Promise<void> {
+    const data = new Uint8Array(2);
+    new DataView(data.buffer).setUint16(0, value, false);
+    return this.dbWrite(dbNumber, offset, data);
+  }
+
+  /**
+   * WORD is an unsigned 16-bit value in S7.
+   */
+  public dbReadWord(dbNumber: number, offset: number): Promise<number> {
+    return this.dbReadUint(dbNumber, offset);
+  }
+
+  /**
+   * WORD is an unsigned 16-bit value in S7.
+   */
+  public dbWriteWord(dbNumber: number, offset: number, value: number): Promise<void> {
+    return this.dbWriteUint(dbNumber, offset, value);
+  }
+
+  /**
+   * Read DINT (32-bit signed big-endian) from DB.
+   */
+  public async dbReadDint(dbNumber: number, offset: number): Promise<number> {
+    const data = await this.dbRead(dbNumber, offset, 4);
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getInt32(0, false);
+  }
+
+  /**
+   * Write DINT (32-bit signed big-endian) to DB.
+   */
+  public dbWriteDint(dbNumber: number, offset: number, value: number): Promise<void> {
+    const data = new Uint8Array(4);
+    new DataView(data.buffer).setInt32(0, value, false);
+    return this.dbWrite(dbNumber, offset, data);
+  }
+
+  /**
+   * Read UDINT (32-bit unsigned big-endian) from DB.
+   */
+  public async dbReadUdint(dbNumber: number, offset: number): Promise<number> {
+    const data = await this.dbRead(dbNumber, offset, 4);
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0, false);
+  }
+
+  /**
+   * Write UDINT (32-bit unsigned big-endian) to DB.
+   */
+  public dbWriteUdint(dbNumber: number, offset: number, value: number): Promise<void> {
+    const data = new Uint8Array(4);
+    new DataView(data.buffer).setUint32(0, value, false);
+    return this.dbWrite(dbNumber, offset, data);
+  }
+
+  /**
+   * DWORD is an unsigned 32-bit value in S7.
+   */
+  public dbReadDword(dbNumber: number, offset: number): Promise<number> {
+    return this.dbReadUdint(dbNumber, offset);
+  }
+
+  /**
+   * DWORD is an unsigned 32-bit value in S7.
+   */
+  public dbWriteDword(dbNumber: number, offset: number, value: number): Promise<void> {
+    return this.dbWriteUdint(dbNumber, offset, value);
+  }
+
+  /**
+   * Read REAL (32-bit IEEE754 big-endian) from DB.
+   */
+  public async dbReadReal(dbNumber: number, offset: number): Promise<number> {
+    const data = await this.dbRead(dbNumber, offset, 4);
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getFloat32(0, false);
+  }
+
+  /**
+   * Write REAL (32-bit IEEE754 big-endian) to DB.
+   */
+  public dbWriteReal(dbNumber: number, offset: number, value: number): Promise<void> {
+    const data = new Uint8Array(4);
+    new DataView(data.buffer).setFloat32(0, value, false);
+    return this.dbWrite(dbNumber, offset, data);
+  }
+
+  /**
+   * Read LREAL (64-bit IEEE754 big-endian) from DB.
+   */
+  public async dbReadLreal(dbNumber: number, offset: number): Promise<number> {
+    const data = await this.dbRead(dbNumber, offset, 8);
+    return new DataView(data.buffer, data.byteOffset, data.byteLength).getFloat64(0, false);
+  }
+
+  /**
+   * Write LREAL (64-bit IEEE754 big-endian) to DB.
+   */
+  public dbWriteLreal(dbNumber: number, offset: number, value: number): Promise<void> {
+    const data = new Uint8Array(8);
+    new DataView(data.buffer).setFloat64(0, value, false);
+    return this.dbWrite(dbNumber, offset, data);
+  }
+
+  /**
+   * Read classic S7 STRING.
+   */
+  public async dbReadString(dbNumber: number, offset: number): Promise<string> {
+    const header = await this.dbRead(dbNumber, offset, 2);
+    const maxLength = header[0] ?? 0;
+    const currentLength = Math.min(header[1] ?? 0, maxLength);
+    const data = await this.dbRead(dbNumber, offset + 2, maxLength);
+    return this.decodeLatin1(data.slice(0, currentLength));
+  }
+
+  /**
+   * Write classic S7 STRING.
+   */
+  public dbWriteString(dbNumber: number, offset: number, value: string, maxLength = 254): Promise<void> {
+    const encoded = this.encodeLatin1(value);
+    const used = encoded.slice(0, maxLength);
+    const out = new Uint8Array(2 + maxLength);
+    out[0] = maxLength & 0xff;
+    out[1] = used.length & 0xff;
+    out.set(used, 2);
+    return this.dbWrite(dbNumber, offset, out);
+  }
+
+  /**
+   * Read S7 WSTRING (UTF-16 big-endian payload).
+   */
+  public async dbReadWstring(dbNumber: number, offset: number): Promise<string> {
+    const header = await this.dbRead(dbNumber, offset, 4);
+    const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+    const maxLength = view.getUint16(0, false);
+    const currentLength = Math.min(view.getUint16(2, false), maxLength);
+    const data = await this.dbRead(dbNumber, offset + 4, maxLength * 2);
+    return this.decodeUtf16Be(data.slice(0, currentLength * 2));
+  }
+
+  /**
+   * Write S7 WSTRING (UTF-16 big-endian payload).
+   */
+  public dbWriteWstring(dbNumber: number, offset: number, value: string, maxLength = 254): Promise<void> {
+    const units = this.encodeUtf16Be(value, maxLength);
+    const out = new Uint8Array(4 + maxLength * 2);
+    const view = new DataView(out.buffer);
+    view.setUint16(0, maxLength, false);
+    view.setUint16(2, units.length / 2, false);
+    out.set(units, 4);
+    return this.dbWrite(dbNumber, offset, out);
+  }
+
+  /**
    * Generic area read with automatic request chunking based on negotiated PDU.
    */
   public async readArea(
@@ -735,6 +971,47 @@ export class AsyncClient {
     for (const chunk of chunks) {
       out.set(chunk, offset);
       offset += chunk.length;
+    }
+    return out;
+  }
+
+  private ensureBitOffset(bitOffset: number): void {
+    if (bitOffset < 0 || bitOffset > 7) {
+      throw new Error(`Bit offset must be 0-7, got ${bitOffset}`);
+    }
+  }
+
+  private encodeLatin1(value: string): Uint8Array {
+    const out = new Uint8Array(value.length);
+    for (let i = 0; i < value.length; i += 1) {
+      out[i] = value.charCodeAt(i) & 0xff;
+    }
+    return out;
+  }
+
+  private decodeLatin1(bytes: Uint8Array): string {
+    let out = "";
+    for (const b of bytes) {
+      out += String.fromCharCode(b);
+    }
+    return out;
+  }
+
+  private encodeUtf16Be(value: string, maxLength: number): Uint8Array {
+    const limited = value.slice(0, maxLength);
+    const out = new Uint8Array(limited.length * 2);
+    const view = new DataView(out.buffer);
+    for (let i = 0; i < limited.length; i += 1) {
+      view.setUint16(i * 2, limited.charCodeAt(i), false);
+    }
+    return out;
+  }
+
+  private decodeUtf16Be(bytes: Uint8Array): string {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let out = "";
+    for (let i = 0; i + 1 < bytes.length; i += 2) {
+      out += String.fromCharCode(view.getUint16(i, false));
     }
     return out;
   }
