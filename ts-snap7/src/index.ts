@@ -5,7 +5,7 @@
  * utilities so users can choose ergonomic API or protocol-level control.
  */
 export { AsyncClient } from "./client/async/async-client.js";
-export { ClientParameter, ConnectionType } from "./types.js";
+export { Area, ClientParameter, ConnectionType, WordLen } from "./types.js";
 export type { ConnectOptions, DbReadItem, ProtocolSelection } from "./types.js";
 
 export {

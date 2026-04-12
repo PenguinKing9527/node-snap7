@@ -43,6 +43,38 @@ export enum ClientParameter {
 }
 
 /**
+ * S7 memory areas for generic area read/write.
+ *
+ * Values are aligned with classic S7 area identifiers.
+ */
+export enum Area {
+  PE = 0x81,
+  PA = 0x82,
+  MK = 0x83,
+  DB = 0x84,
+  CT = 0x1c,
+  TM = 0x1d
+}
+
+/**
+ * S7 transport/word length identifiers.
+ *
+ * These values are used in S7 ANY address specifications.
+ */
+export enum WordLen {
+  Bit = 0x01,
+  Byte = 0x02,
+  Char = 0x03,
+  Word = 0x04,
+  Int = 0x05,
+  DWord = 0x06,
+  DInt = 0x07,
+  Real = 0x08,
+  Counter = 0x1c,
+  Timer = 0x1d
+}
+
+/**
  * Connection options accepted by `AsyncClient.connect`.
  * Defaults are intentionally aligned with python-snap7 behavior.
  */

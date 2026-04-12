@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { LegacyS7Protocol, S7Function, S7PduType } from "../src/s7/legacy/index.js";
+import { LegacyS7Protocol, S7Area, S7Function, S7PduType, S7WordLen } from "../src/s7/legacy/index.js";
 
 const buildResponse = (params: Uint8Array, data: Uint8Array, sequence = 1): Uint8Array => {
   const out = new Uint8Array(12 + params.length + data.length);
@@ -34,6 +34,10 @@ describe("LegacyS7Protocol", () => {
     const write = protocol.buildWriteDbRequest(1, 0, Uint8Array.of(1, 2, 3, 4));
     expect(write[10]).toBe(S7Function.WRITE_AREA);
     expect(write.length).toBeGreaterThan(read.length);
+
+    const readMk = protocol.buildReadAreaRequest(S7Area.MK, 0, 10, 4, S7WordLen.BYTE);
+    expect(readMk[10]).toBe(S7Function.READ_AREA);
+    expect(readMk[20]).toBe(S7Area.MK);
   });
 
   it("parses setup response and extracts negotiated PDU length", () => {
@@ -77,5 +81,12 @@ describe("LegacyS7Protocol", () => {
     const response = buildResponse(params, data, 4);
     const parsed = protocol.parseResponse(response);
     expect(() => protocol.extractReadBytes(parsed)).toThrow(/Read failed/i);
+  });
+
+  it("rejects write payload that is not aligned to requested word length", () => {
+    const protocol = new LegacyS7Protocol();
+    expect(() => protocol.buildWriteAreaRequest(S7Area.TM, 0, 0, Uint8Array.of(1, 2, 3), S7WordLen.TIMER)).toThrow(
+      /not aligned/i
+    );
   });
 });

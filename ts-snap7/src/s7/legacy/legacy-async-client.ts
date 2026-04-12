@@ -1,7 +1,7 @@
 import { Snap7ConnectionError, Snap7ProtocolError } from "../../errors/index.js";
 import { AsyncIsoTransport } from "../../transport/index.js";
 import type { TransportConnectOptions, TransportRequestOptions } from "../../transport/types.js";
-import { LegacyS7Protocol } from "./protocol.js";
+import { LegacyS7Protocol, S7Area, S7WordLen } from "./protocol.js";
 
 const LOCAL_TSAP = 0x0100;
 
@@ -155,12 +155,7 @@ export class LegacyS7AsyncClient {
     size: number,
     options: TransportRequestOptions = {}
   ): Promise<Uint8Array> {
-    this.ensureConnected();
-
-    const request = this.protocol.buildReadDbRequest(dbNumber, start, size);
-    const responsePdu = await this.exchange(request, options);
-    const parsed = this.protocol.parseResponse(responsePdu);
-    return this.protocol.extractReadBytes(parsed);
+    return this.readArea(S7Area.DB, dbNumber, start, size, S7WordLen.BYTE, options);
   }
 
   /**
@@ -172,9 +167,42 @@ export class LegacyS7AsyncClient {
     data: Uint8Array,
     options: TransportRequestOptions = {}
   ): Promise<void> {
+    await this.writeArea(S7Area.DB, dbNumber, start, data, S7WordLen.BYTE, options);
+  }
+
+  /**
+   * Reads bytes from any classic S7 area.
+   */
+  public async readArea(
+    area: S7Area,
+    dbNumber: number,
+    start: number,
+    amount: number,
+    wordLen: S7WordLen,
+    options: TransportRequestOptions = {}
+  ): Promise<Uint8Array> {
     this.ensureConnected();
 
-    const request = this.protocol.buildWriteDbRequest(dbNumber, start, data);
+    const request = this.protocol.buildReadAreaRequest(area, dbNumber, start, amount, wordLen);
+    const responsePdu = await this.exchange(request, options);
+    const parsed = this.protocol.parseResponse(responsePdu);
+    return this.protocol.extractReadBytes(parsed);
+  }
+
+  /**
+   * Writes bytes to any classic S7 area.
+   */
+  public async writeArea(
+    area: S7Area,
+    dbNumber: number,
+    start: number,
+    data: Uint8Array,
+    wordLen: S7WordLen,
+    options: TransportRequestOptions = {}
+  ): Promise<void> {
+    this.ensureConnected();
+
+    const request = this.protocol.buildWriteAreaRequest(area, dbNumber, start, data, wordLen);
     const responsePdu = await this.exchange(request, options);
     const parsed = this.protocol.parseResponse(responsePdu);
     this.protocol.checkWriteResponse(parsed);

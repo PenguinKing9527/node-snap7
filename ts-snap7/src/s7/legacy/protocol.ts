@@ -22,11 +22,25 @@ export enum S7Function {
 }
 
 export enum S7Area {
-  DB = 0x84
+  PE = 0x81,
+  PA = 0x82,
+  MK = 0x83,
+  DB = 0x84,
+  CT = 0x1c,
+  TM = 0x1d
 }
 
 export enum S7WordLen {
-  BYTE = 0x02
+  BIT = 0x01,
+  BYTE = 0x02,
+  CHAR = 0x03,
+  WORD = 0x04,
+  INT = 0x05,
+  DWORD = 0x06,
+  DINT = 0x07,
+  REAL = 0x08,
+  COUNTER = 0x1c,
+  TIMER = 0x1d
 }
 
 export interface LegacyS7Response {
@@ -83,6 +97,13 @@ export class LegacyS7Protocol {
    * Builds single-item DB read request.
    */
   public buildReadDbRequest(dbNumber: number, start: number, size: number): Uint8Array {
+    return this.buildReadAreaRequest(S7Area.DB, dbNumber, start, size, S7WordLen.BYTE);
+  }
+
+  /**
+   * Builds single-item area read request.
+   */
+  public buildReadAreaRequest(area: S7Area, dbNumber: number, start: number, amount: number, wordLen: S7WordLen): Uint8Array {
     const header = new Uint8Array(10);
     const hv = new DataView(header.buffer);
     hv.setUint8(0, 0x32);
@@ -99,12 +120,12 @@ export class LegacyS7Protocol {
     pv.setUint8(2, 0x12);
     pv.setUint8(3, 0x0a);
     pv.setUint8(4, 0x10);
-    pv.setUint8(5, S7WordLen.BYTE);
-    pv.setUint16(6, size, false);
-    pv.setUint16(8, dbNumber, false);
-    pv.setUint8(10, S7Area.DB);
-    // Address for non-bit types is byte offset * 8 (3-byte big-endian value).
-    const address = start * 8;
+    pv.setUint8(5, wordLen);
+    pv.setUint16(6, amount, false);
+    pv.setUint16(8, area === S7Area.DB ? dbNumber : 0, false);
+    pv.setUint8(10, area);
+    // Bit access uses absolute bit offset; other transports use byte offset * 8.
+    const address = wordLen === S7WordLen.BIT ? start : start * 8;
     pv.setUint8(11, (address >> 16) & 0xff);
     pv.setUint8(12, (address >> 8) & 0xff);
     pv.setUint8(13, address & 0xff);
@@ -119,6 +140,19 @@ export class LegacyS7Protocol {
    * Builds single-item DB write request.
    */
   public buildWriteDbRequest(dbNumber: number, start: number, data: Uint8Array): Uint8Array {
+    return this.buildWriteAreaRequest(S7Area.DB, dbNumber, start, data, S7WordLen.BYTE);
+  }
+
+  /**
+   * Builds single-item area write request.
+   */
+  public buildWriteAreaRequest(
+    area: S7Area,
+    dbNumber: number,
+    start: number,
+    data: Uint8Array,
+    wordLen: S7WordLen
+  ): Uint8Array {
     const header = new Uint8Array(10);
     const hv = new DataView(header.buffer);
     hv.setUint8(0, 0x32);
@@ -135,11 +169,12 @@ export class LegacyS7Protocol {
     pv.setUint8(2, 0x12);
     pv.setUint8(3, 0x0a);
     pv.setUint8(4, 0x10);
-    pv.setUint8(5, S7WordLen.BYTE);
-    pv.setUint16(6, data.length, false);
-    pv.setUint16(8, dbNumber, false);
-    pv.setUint8(10, S7Area.DB);
-    const address = start * 8;
+    pv.setUint8(5, wordLen);
+    const amount = this.computeAmountFromDataLength(wordLen, data.length);
+    pv.setUint16(6, amount, false);
+    pv.setUint16(8, area === S7Area.DB ? dbNumber : 0, false);
+    pv.setUint8(10, area);
+    const address = wordLen === S7WordLen.BIT ? start : start * 8;
     pv.setUint8(11, (address >> 16) & 0xff);
     pv.setUint8(12, (address >> 8) & 0xff);
     pv.setUint8(13, address & 0xff);
@@ -147,7 +182,7 @@ export class LegacyS7Protocol {
     const dataSection = new Uint8Array(4 + data.length);
     const dv = new DataView(dataSection.buffer);
     dv.setUint8(0, 0x00);
-    dv.setUint8(1, 0x04); // byte transport size in S7 data section
+    dv.setUint8(1, this.dataTransportSize(wordLen));
     dv.setUint16(2, data.length * 8, false);
     dataSection.set(data, 4);
 
@@ -243,5 +278,39 @@ export class LegacyS7Protocol {
         `Write failed with return code 0x${(response.returnCode ?? 0).toString(16).padStart(2, "0")}`
       );
     }
+  }
+
+  private dataTransportSize(wordLen: S7WordLen): number {
+    if (wordLen === S7WordLen.COUNTER) {
+      return 0x1c;
+    }
+    if (wordLen === S7WordLen.TIMER) {
+      return 0x1d;
+    }
+    if (wordLen === S7WordLen.BIT) {
+      return 0x03;
+    }
+    return 0x04;
+  }
+
+  private computeAmountFromDataLength(wordLen: S7WordLen, dataLength: number): number {
+    const bytesPerElement = this.bytesPerElement(wordLen);
+    if (dataLength % bytesPerElement !== 0) {
+      throw new Error(`Data length ${dataLength} is not aligned for word length ${wordLen}`);
+    }
+    return dataLength / bytesPerElement;
+  }
+
+  private bytesPerElement(wordLen: S7WordLen): number {
+    if (wordLen === S7WordLen.BIT || wordLen === S7WordLen.BYTE || wordLen === S7WordLen.CHAR) {
+      return 1;
+    }
+    if (wordLen === S7WordLen.WORD || wordLen === S7WordLen.INT || wordLen === S7WordLen.COUNTER || wordLen === S7WordLen.TIMER) {
+      return 2;
+    }
+    if (wordLen === S7WordLen.DWORD || wordLen === S7WordLen.DINT || wordLen === S7WordLen.REAL) {
+      return 4;
+    }
+    return 1;
   }
 }

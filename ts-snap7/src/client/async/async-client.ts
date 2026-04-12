@@ -1,7 +1,7 @@
 import { Snap7ConnectionError } from "../../errors/index.js";
 import { LegacyS7AsyncClient } from "../../s7/legacy/index.js";
 import { S7CommPlusAsyncClient } from "../../s7/plus/index.js";
-import { ClientParameter, ConnectionType } from "../../types.js";
+import { Area, ClientParameter, ConnectionType, WordLen } from "../../types.js";
 import type { ConnectOptions, DbReadItem, ProtocolSelection } from "../../types.js";
 
 type ActiveProtocol = Exclude<ProtocolSelection, "auto">;
@@ -14,6 +14,14 @@ export interface LegacyClientLike {
   disconnect(): Promise<void>;
   readonly connected?: boolean;
   readonly negotiatedPduLength?: number;
+  readArea?(
+    area: number,
+    dbNumber: number,
+    start: number,
+    amount: number,
+    wordLen: number
+  ): Promise<Uint8Array>;
+  writeArea?(area: number, dbNumber: number, start: number, data: Uint8Array, wordLen: number): Promise<void>;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
 }
@@ -371,6 +379,156 @@ export class AsyncClient {
     }
   }
 
+  /**
+   * Generic area read with automatic request chunking based on negotiated PDU.
+   */
+  public async readArea(
+    area: Area,
+    dbNumber: number,
+    start: number,
+    size: number,
+    wordLen: WordLen = this.defaultWordLenForArea(area)
+  ): Promise<Uint8Array> {
+    const startMs = Date.now();
+    try {
+      const bytesPerElement = this.bytesPerElement(wordLen);
+      const maxElementsPerChunk = Math.max(1, Math.floor(this.maxReadSize() / bytesPerElement));
+      let remaining = size;
+      let currentStart = start;
+      const chunks: Uint8Array[] = [];
+
+      while (remaining > 0) {
+        const chunkElements = Math.min(remaining, maxElementsPerChunk);
+        const chunk = await this.readAreaChunk(area, dbNumber, currentStart, chunkElements, wordLen);
+        chunks.push(chunk);
+        remaining -= chunkElements;
+        currentStart += chunkElements;
+      }
+
+      this.recordSuccess(startMs);
+      return this.concatChunks(chunks);
+    } catch (error) {
+      this.recordFailure(startMs, this.classifyErrorCode(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Generic area write with automatic request chunking based on negotiated PDU.
+   */
+  public async writeArea(
+    area: Area,
+    dbNumber: number,
+    start: number,
+    data: Uint8Array,
+    wordLen: WordLen = this.defaultWordLenForArea(area)
+  ): Promise<void> {
+    const startMs = Date.now();
+    try {
+      const bytesPerElement = this.bytesPerElement(wordLen);
+      if (data.length % bytesPerElement !== 0) {
+        throw new Error(`Data length ${data.length} is not aligned for word length ${wordLen}`);
+      }
+
+      const totalElements = data.length / bytesPerElement;
+      const maxElementsPerChunk = Math.max(1, Math.floor(this.maxWriteSize() / bytesPerElement));
+      let remaining = totalElements;
+      let currentStart = start;
+      let offsetBytes = 0;
+
+      while (remaining > 0) {
+        const chunkElements = Math.min(remaining, maxElementsPerChunk);
+        const chunkBytes = chunkElements * bytesPerElement;
+        const chunkData = data.slice(offsetBytes, offsetBytes + chunkBytes);
+        await this.writeAreaChunk(area, dbNumber, currentStart, chunkData, wordLen);
+        remaining -= chunkElements;
+        currentStart += chunkElements;
+        offsetBytes += chunkBytes;
+      }
+
+      this.recordSuccess(startMs);
+    } catch (error) {
+      this.recordFailure(startMs, this.classifyErrorCode(error));
+      throw error;
+    }
+  }
+
+  /**
+   * Shortcut read from process outputs (PA).
+   */
+  public abRead(start: number, size: number): Promise<Uint8Array> {
+    return this.readArea(Area.PA, 0, start, size, WordLen.Byte);
+  }
+
+  /**
+   * Shortcut write to process outputs (PA).
+   */
+  public abWrite(start: number, data: Uint8Array): Promise<void> {
+    return this.writeArea(Area.PA, 0, start, data, WordLen.Byte);
+  }
+
+  /**
+   * Shortcut read from process inputs (PE).
+   */
+  public ebRead(start: number, size: number): Promise<Uint8Array> {
+    return this.readArea(Area.PE, 0, start, size, WordLen.Byte);
+  }
+
+  /**
+   * Shortcut write to process inputs (PE).
+   */
+  public ebWrite(start: number, size: number, data: Uint8Array): Promise<void> {
+    return this.writeArea(Area.PE, 0, start, data.slice(0, size), WordLen.Byte);
+  }
+
+  /**
+   * Shortcut read from marker memory (MK).
+   */
+  public mbRead(start: number, size: number): Promise<Uint8Array> {
+    return this.readArea(Area.MK, 0, start, size, WordLen.Byte);
+  }
+
+  /**
+   * Shortcut write to marker memory (MK).
+   */
+  public mbWrite(start: number, size: number, data: Uint8Array): Promise<void> {
+    return this.writeArea(Area.MK, 0, start, data.slice(0, size), WordLen.Byte);
+  }
+
+  /**
+   * Shortcut read from timers (TM).
+   */
+  public tmRead(start: number, size: number): Promise<Uint8Array> {
+    return this.readArea(Area.TM, 0, start, size, WordLen.Timer);
+  }
+
+  /**
+   * Shortcut write to timers (TM).
+   */
+  public tmWrite(start: number, size: number, data: Uint8Array): Promise<void> {
+    if (data.length !== size * 2) {
+      return Promise.reject(new Error(`Data length ${data.length} doesn't match size ${size * 2}`));
+    }
+    return this.writeArea(Area.TM, 0, start, data, WordLen.Timer);
+  }
+
+  /**
+   * Shortcut read from counters (CT).
+   */
+  public ctRead(start: number, size: number): Promise<Uint8Array> {
+    return this.readArea(Area.CT, 0, start, size, WordLen.Counter);
+  }
+
+  /**
+   * Shortcut write to counters (CT).
+   */
+  public ctWrite(start: number, size: number, data: Uint8Array): Promise<void> {
+    if (data.length !== size * 2) {
+      return Promise.reject(new Error(`Data length ${data.length} doesn't match size ${size * 2}`));
+    }
+    return this.writeArea(Area.CT, 0, start, data, WordLen.Counter);
+  }
+
   private async connectAuto(options: ConnectOptions): Promise<void> {
     try {
       await this.connectS7CommPlus(options);
@@ -485,5 +643,99 @@ export class AsyncClient {
   private recordFailure(startMs: number, code: number): void {
     this.lastExecTimeMs = Date.now() - startMs;
     this.lastErrorCode = code;
+  }
+
+  private async readAreaChunk(
+    area: Area,
+    dbNumber: number,
+    start: number,
+    amount: number,
+    wordLen: WordLen
+  ): Promise<Uint8Array> {
+    if (this.activeProtocol === "legacy") {
+      const legacy = this.requireLegacyClient();
+      if (legacy.readArea === undefined) {
+        throw new Error("Legacy client does not support readArea");
+      }
+      return legacy.readArea(area, dbNumber, start, amount, wordLen);
+    }
+
+    if (this.activeProtocol === "s7commplus") {
+      if (area !== Area.DB || wordLen !== WordLen.Byte) {
+        throw new Error("S7CommPlus area access currently supports DB byte reads only");
+      }
+      return this.requireS7CommPlusClient().dbRead(dbNumber, start, amount);
+    }
+
+    throw new Snap7ConnectionError("AsyncClient is not connected");
+  }
+
+  private async writeAreaChunk(
+    area: Area,
+    dbNumber: number,
+    start: number,
+    data: Uint8Array,
+    wordLen: WordLen
+  ): Promise<void> {
+    if (this.activeProtocol === "legacy") {
+      const legacy = this.requireLegacyClient();
+      if (legacy.writeArea === undefined) {
+        throw new Error("Legacy client does not support writeArea");
+      }
+      await legacy.writeArea(area, dbNumber, start, data, wordLen);
+      return;
+    }
+
+    if (this.activeProtocol === "s7commplus") {
+      if (area !== Area.DB || wordLen !== WordLen.Byte) {
+        throw new Error("S7CommPlus area access currently supports DB byte writes only");
+      }
+      await this.requireS7CommPlusClient().dbWrite(dbNumber, start, data);
+      return;
+    }
+
+    throw new Snap7ConnectionError("AsyncClient is not connected");
+  }
+
+  private maxReadSize(): number {
+    return this.getPduLength() - 18;
+  }
+
+  private maxWriteSize(): number {
+    return this.getPduLength() - 35;
+  }
+
+  private defaultWordLenForArea(area: Area): WordLen {
+    if (area === Area.TM) {
+      return WordLen.Timer;
+    }
+    if (area === Area.CT) {
+      return WordLen.Counter;
+    }
+    return WordLen.Byte;
+  }
+
+  private bytesPerElement(wordLen: WordLen): number {
+    if (wordLen === WordLen.Bit || wordLen === WordLen.Byte || wordLen === WordLen.Char) {
+      return 1;
+    }
+    if (wordLen === WordLen.Word || wordLen === WordLen.Int || wordLen === WordLen.Counter || wordLen === WordLen.Timer) {
+      return 2;
+    }
+    if (wordLen === WordLen.DWord || wordLen === WordLen.DInt || wordLen === WordLen.Real) {
+      return 4;
+    }
+    return 1;
+  }
+
+  private concatChunks(chunks: Uint8Array[]): Uint8Array {
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return out;
   }
 }
