@@ -1,6 +1,7 @@
 import { Snap7ConnectionError } from "../../errors/index.js";
 import { LegacyS7AsyncClient } from "../../s7/legacy/index.js";
 import { S7CommPlusAsyncClient } from "../../s7/plus/index.js";
+import { ClientParameter, ConnectionType } from "../../types.js";
 import type { ConnectOptions, DbReadItem, ProtocolSelection } from "../../types.js";
 
 type ActiveProtocol = Exclude<ProtocolSelection, "auto">;
@@ -11,6 +12,8 @@ type ActiveProtocol = Exclude<ProtocolSelection, "auto">;
 export interface LegacyClientLike {
   connect(options: { address: string; rack?: number; slot?: number; tcpPort?: number }): Promise<void>;
   disconnect(): Promise<void>;
+  readonly connected?: boolean;
+  readonly negotiatedPduLength?: number;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
 }
@@ -19,6 +22,7 @@ export interface LegacyClientLike {
  * Minimal S7CommPlus-client contract required by the unified client.
  */
 export interface S7CommPlusClientLike {
+  readonly connected?: boolean;
   connect(options: { host: string; port?: number }): Promise<void>;
   disconnect(): void;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
@@ -54,6 +58,15 @@ export class AsyncClient {
   private readonly createS7CommPlusClient: () => S7CommPlusClientLike;
   private legacyClient: LegacyClientLike | null;
   private s7CommPlusClient: S7CommPlusClientLike | null;
+  private hostValue: string;
+  private localTsapValue: number;
+  private remoteTsapValue: number;
+  private connectionTypeValue: number;
+  private sessionPassword: string | null;
+  private pduLengthValue: number;
+  private lastExecTimeMs: number;
+  private lastErrorCode: number;
+  private readonly params: Map<ClientParameter, number>;
 
   /**
    * Creates a client in `auto` protocol mode by default.
@@ -66,6 +79,15 @@ export class AsyncClient {
     this.createS7CommPlusClient = dependencies.createS7CommPlusClient ?? (() => new S7CommPlusAsyncClient());
     this.legacyClient = null;
     this.s7CommPlusClient = null;
+    this.hostValue = "";
+    this.localTsapValue = 0x0100;
+    this.remoteTsapValue = 0x0102;
+    this.connectionTypeValue = ConnectionType.PG;
+    this.sessionPassword = null;
+    this.pduLengthValue = 480;
+    this.lastExecTimeMs = 0;
+    this.lastErrorCode = 0;
+    this.params = new Map<ClientParameter, number>();
   }
 
   /**
@@ -79,29 +101,155 @@ export class AsyncClient {
   }
 
   /**
+   * Whether a protocol-specific client is currently connected.
+   */
+  public get connected(): boolean {
+    if (this.activeProtocol === "legacy") {
+      return this.legacyClient?.connected ?? false;
+    }
+    if (this.activeProtocol === "s7commplus") {
+      return this.s7CommPlusClient?.connected ?? false;
+    }
+    return false;
+  }
+
+  /**
+   * Set explicit connection endpoint and TSAP pair.
+   * This mirrors python-snap7 client mixin behavior.
+   */
+  public setConnectionParams(address: string, localTsap: number, remoteTsap: number): void {
+    this.hostValue = address;
+    this.localTsapValue = localTsap;
+    this.remoteTsapValue = remoteTsap;
+  }
+
+  /**
+   * Set connection profile type (PG/OP/S7 basic).
+   */
+  public setConnectionType(connectionType: number): void {
+    this.connectionTypeValue = connectionType;
+  }
+
+  /**
+   * Store session password metadata for security operations.
+   */
+  public setSessionPassword(password: string): number {
+    this.sessionPassword = password;
+    return 0;
+  }
+
+  /**
+   * Clear previously stored session password metadata.
+   */
+  public clearSessionPassword(): number {
+    this.sessionPassword = null;
+    return 0;
+  }
+
+  /**
+   * Get client parameter value.
+   */
+  public getParam(parameter: ClientParameter): number {
+    if (this.isNonClientParameter(parameter)) {
+      throw new Error(`Parameter ${parameter} not valid for client`);
+    }
+    if (parameter === ClientParameter.SrcTSap) {
+      return this.localTsapValue;
+    }
+    return this.params.get(parameter) ?? 0;
+  }
+
+  /**
+   * Set client parameter value.
+   */
+  public setParam(parameter: ClientParameter, value: number): number {
+    if (parameter === ClientParameter.RemotePort && this.connected) {
+      throw new Error("Cannot change RemotePort while connected");
+    }
+    if (parameter === ClientParameter.PDURequest) {
+      this.pduLengthValue = value;
+    }
+    this.params.set(parameter, value);
+    return 0;
+  }
+
+  /**
+   * Return currently negotiated or configured PDU length.
+   */
+  public getPduLength(): number {
+    if (this.activeProtocol === "legacy" && this.legacyClient?.negotiatedPduLength !== undefined) {
+      return this.legacyClient.negotiatedPduLength;
+    }
+    return this.pduLengthValue;
+  }
+
+  /**
+   * Return last operation execution time in milliseconds.
+   */
+  public getExecTime(): number {
+    return this.lastExecTimeMs;
+  }
+
+  /**
+   * Return last error code tracked by unified client.
+   */
+  public getLastError(): number {
+    return this.lastErrorCode;
+  }
+
+  /**
+   * Convert error code to a human-readable message.
+   */
+  public errorText(errorCode: number): string {
+    const errorTexts = new Map<number, string>([
+      [0, "OK"],
+      [0x0001, "Invalid resource"],
+      [0x0002, "Invalid handle"],
+      [0x0003, "Not connected"],
+      [0x0004, "Connection error"],
+      [0x0005, "Data error"],
+      [0x0006, "Timeout"],
+      [0x0007, "Function not supported"],
+      [0x0008, "Invalid PDU size"],
+      [0x0009, "Invalid PLC answer"],
+      [0x000a, "Invalid CPU state"],
+      [0x01e00000, "CPU : Invalid password"],
+      [0x00d00000, "CPU : Invalid value supplied"],
+      [0x02600000, "CLI : Cannot change this param now"]
+    ]);
+    return errorTexts.get(errorCode) ?? `Unknown error: ${errorCode}`;
+  }
+
+  /**
    * Connects to a PLC endpoint.
    */
   public async connect(options: ConnectOptions): Promise<void> {
-    this.preferredProtocol = options.protocol ?? "auto";
-    await this.disconnect();
+    const start = Date.now();
+    try {
+      this.hostValue = options.address;
+      this.preferredProtocol = options.protocol ?? "auto";
+      await this.disconnect();
 
-    if (this.preferredProtocol === "legacy") {
-      await this.connectLegacy(options);
-      return;
+      if (this.preferredProtocol === "legacy") {
+        await this.connectLegacy(options);
+      } else if (this.preferredProtocol === "s7commplus") {
+        await this.connectS7CommPlus(options);
+      } else {
+        await this.connectAuto(options);
+      }
+
+      this.recordSuccess(start);
+    } catch (error) {
+      this.recordFailure(start, this.classifyErrorCode(error));
+      throw error;
     }
-
-    if (this.preferredProtocol === "s7commplus") {
-      await this.connectS7CommPlus(options);
-      return;
-    }
-
-    await this.connectAuto(options);
   }
 
   /**
    * Disconnects from PLC and releases transport resources.
    */
   public async disconnect(): Promise<void> {
+    const start = Date.now();
     let disconnectError: unknown;
 
     if (this.s7CommPlusClient !== null) {
@@ -127,62 +275,100 @@ export class AsyncClient {
     this.legacyClient = null;
 
     if (disconnectError !== undefined) {
+      this.recordFailure(start, 0x0004);
       throw new Snap7ConnectionError(
         disconnectError instanceof Error ? disconnectError.message : "Failed to disconnect unified AsyncClient"
       );
     }
+    this.recordSuccess(start);
   }
 
   /**
    * Reads raw bytes from a DB segment.
    */
   public dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array> {
-    if (this.activeProtocol === "s7commplus") {
-      return this.requireS7CommPlusClient().dbRead(dbNumber, start, size);
-    }
+    const startMs = Date.now();
+    const op = async (): Promise<Uint8Array> => {
+      if (this.activeProtocol === "s7commplus") {
+        return this.requireS7CommPlusClient().dbRead(dbNumber, start, size);
+      }
 
-    if (this.activeProtocol === "legacy") {
-      return this.requireLegacyClient().dbRead(dbNumber, start, size);
-    }
+      if (this.activeProtocol === "legacy") {
+        return this.requireLegacyClient().dbRead(dbNumber, start, size);
+      }
 
-    return Promise.reject(new Snap7ConnectionError("AsyncClient is not connected"));
+      throw new Snap7ConnectionError("AsyncClient is not connected");
+    };
+
+    return op()
+      .then((value) => {
+        this.recordSuccess(startMs);
+        return value;
+      })
+      .catch((error: unknown) => {
+        this.recordFailure(startMs, this.classifyErrorCode(error));
+        throw error;
+      });
   }
 
   /**
    * Writes raw bytes to a DB segment.
    */
   public dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void> {
-    if (this.activeProtocol === "s7commplus") {
-      return this.requireS7CommPlusClient().dbWrite(dbNumber, start, data);
-    }
+    const startMs = Date.now();
+    const op = async (): Promise<void> => {
+      if (this.activeProtocol === "s7commplus") {
+        await this.requireS7CommPlusClient().dbWrite(dbNumber, start, data);
+        return;
+      }
 
-    if (this.activeProtocol === "legacy") {
-      return this.requireLegacyClient().dbWrite(dbNumber, start, data);
-    }
+      if (this.activeProtocol === "legacy") {
+        await this.requireLegacyClient().dbWrite(dbNumber, start, data);
+        return;
+      }
 
-    return Promise.reject(new Snap7ConnectionError("AsyncClient is not connected"));
+      throw new Snap7ConnectionError("AsyncClient is not connected");
+    };
+
+    return op()
+      .then(() => {
+        this.recordSuccess(startMs);
+      })
+      .catch((error: unknown) => {
+        this.recordFailure(startMs, this.classifyErrorCode(error));
+        throw error;
+      });
   }
 
   /**
    * Reads multiple DB segments in one logical operation.
    */
   public async dbReadMulti(items: DbReadItem[]): Promise<Uint8Array[]> {
-    if (this.activeProtocol === "s7commplus") {
-      return this.requireS7CommPlusClient().dbReadMulti(
-        items.map((item) => [item.dbNumber, item.start, item.size] as const)
-      );
-    }
-
-    if (this.activeProtocol === "legacy") {
-      const legacyClient = this.requireLegacyClient();
-      const out: Uint8Array[] = [];
-      for (const item of items) {
-        out.push(await legacyClient.dbRead(item.dbNumber, item.start, item.size));
+    const startMs = Date.now();
+    try {
+      if (this.activeProtocol === "s7commplus") {
+        const out = await this.requireS7CommPlusClient().dbReadMulti(
+          items.map((item) => [item.dbNumber, item.start, item.size] as const)
+        );
+        this.recordSuccess(startMs);
+        return out;
       }
-      return out;
-    }
 
-    return Promise.reject(new Snap7ConnectionError("AsyncClient is not connected"));
+      if (this.activeProtocol === "legacy") {
+        const legacyClient = this.requireLegacyClient();
+        const out: Uint8Array[] = [];
+        for (const item of items) {
+          out.push(await legacyClient.dbRead(item.dbNumber, item.start, item.size));
+        }
+        this.recordSuccess(startMs);
+        return out;
+      }
+
+      throw new Snap7ConnectionError("AsyncClient is not connected");
+    } catch (error) {
+      this.recordFailure(startMs, this.classifyErrorCode(error));
+      throw error;
+    }
   }
 
   private async connectAuto(options: ConnectOptions): Promise<void> {
@@ -267,5 +453,37 @@ export class AsyncClient {
       return error.message;
     }
     return String(error);
+  }
+
+  private isNonClientParameter(parameter: ClientParameter): boolean {
+    return (
+      parameter === ClientParameter.LocalPort ||
+      parameter === ClientParameter.WorkInterval ||
+      parameter === ClientParameter.MaxClients ||
+      parameter === ClientParameter.BSendTimeout ||
+      parameter === ClientParameter.BRecvTimeout ||
+      parameter === ClientParameter.RecoveryTime ||
+      parameter === ClientParameter.KeepAliveTime
+    );
+  }
+
+  private classifyErrorCode(error: unknown): number {
+    if (error instanceof Snap7ConnectionError) {
+      if (error.message.includes("not connected")) {
+        return 0x0003;
+      }
+      return 0x0004;
+    }
+    return 0x0005;
+  }
+
+  private recordSuccess(startMs: number): void {
+    this.lastExecTimeMs = Date.now() - startMs;
+    this.lastErrorCode = 0;
+  }
+
+  private recordFailure(startMs: number, code: number): void {
+    this.lastExecTimeMs = Date.now() - startMs;
+    this.lastErrorCode = code;
   }
 }
