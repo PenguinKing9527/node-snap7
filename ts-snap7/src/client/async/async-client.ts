@@ -63,6 +63,7 @@ export interface LegacyClientLike {
   getOrderCode?(): Promise<S7OrderCode>;
   getProtection?(): Promise<S7Protection>;
   isoExchangeBuffer?(data: Uint8Array): Promise<Uint8Array>;
+  getCpuState?(): Promise<string>;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
 }
@@ -87,6 +88,32 @@ export interface S7CommPlusClientLike {
 export interface AsyncClientDependencies {
   createLegacyClient?: () => LegacyClientLike;
   createS7CommPlusClient?: () => S7CommPlusClientLike;
+}
+
+/**
+ * Reliability options for production deployments.
+ */
+export interface AsyncClientReliabilityOptions {
+  autoReconnect?: boolean;
+  maxReconnectAttempts?: number;
+  reconnectInitialDelayMs?: number;
+  reconnectBackoffFactor?: number;
+  reconnectMaxDelayMs?: number;
+  heartbeatIntervalMs?: number;
+}
+
+/**
+ * Runtime observability hooks for connection lifecycle and operations.
+ */
+export interface AsyncClientObservabilityHooks {
+  onDisconnect?: (error: Error | null) => void;
+  onReconnect?: (attempt: number) => void;
+  onOperation?: (name: string, durationMs: number, success: boolean, error?: Error) => void;
+}
+
+export interface AsyncClientOptions extends AsyncClientDependencies {
+  reliability?: AsyncClientReliabilityOptions;
+  hooks?: AsyncClientObservabilityHooks;
 }
 
 /**
@@ -117,16 +144,27 @@ export class AsyncClient {
   private lastExecTimeMs: number;
   private lastErrorCode: number;
   private readonly params: Map<ClientParameter, number>;
+  private readonly autoReconnect: boolean;
+  private readonly maxReconnectAttempts: number;
+  private readonly reconnectInitialDelayMs: number;
+  private readonly reconnectBackoffFactor: number;
+  private readonly reconnectMaxDelayMs: number;
+  private readonly heartbeatIntervalMs: number;
+  private readonly hooks: AsyncClientObservabilityHooks;
+  private lastConnectOptions: ConnectOptions | null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null;
+  private heartbeatRunning: boolean;
+  private opQueue: Promise<void>;
 
   /**
    * Creates a client in `auto` protocol mode by default.
    * Optional dependency hooks are primarily intended for unit tests.
    */
-  public constructor(dependencies: AsyncClientDependencies = {}) {
+  public constructor(options: AsyncClientOptions = {}) {
     this.preferredProtocol = "auto";
     this.activeProtocol = null;
-    this.createLegacyClient = dependencies.createLegacyClient ?? (() => new LegacyS7AsyncClient());
-    this.createS7CommPlusClient = dependencies.createS7CommPlusClient ?? (() => new S7CommPlusAsyncClient());
+    this.createLegacyClient = options.createLegacyClient ?? (() => new LegacyS7AsyncClient());
+    this.createS7CommPlusClient = options.createS7CommPlusClient ?? (() => new S7CommPlusAsyncClient());
     this.legacyClient = null;
     this.s7CommPlusClient = null;
     this.hostValue = "";
@@ -138,6 +176,17 @@ export class AsyncClient {
     this.lastExecTimeMs = 0;
     this.lastErrorCode = 0;
     this.params = new Map<ClientParameter, number>();
+    this.autoReconnect = options.reliability?.autoReconnect ?? false;
+    this.maxReconnectAttempts = options.reliability?.maxReconnectAttempts ?? 3;
+    this.reconnectInitialDelayMs = options.reliability?.reconnectInitialDelayMs ?? 1000;
+    this.reconnectBackoffFactor = options.reliability?.reconnectBackoffFactor ?? 2;
+    this.reconnectMaxDelayMs = options.reliability?.reconnectMaxDelayMs ?? 30000;
+    this.heartbeatIntervalMs = options.reliability?.heartbeatIntervalMs ?? 0;
+    this.hooks = options.hooks ?? {};
+    this.lastConnectOptions = null;
+    this.heartbeatTimer = null;
+    this.heartbeatRunning = false;
+    this.opQueue = Promise.resolve();
   }
 
   /**
@@ -274,120 +323,77 @@ export class AsyncClient {
    * Connects to a PLC endpoint.
    */
   public async connect(options: ConnectOptions): Promise<void> {
-    const start = Date.now();
-    try {
-      this.hostValue = options.address;
-      this.preferredProtocol = options.protocol ?? "auto";
-      await this.disconnect();
-
-      if (this.preferredProtocol === "legacy") {
-        await this.connectLegacy(options);
-      } else if (this.preferredProtocol === "s7commplus") {
-        await this.connectS7CommPlus(options);
-      } else {
-        await this.connectAuto(options);
+    await this.enqueueOperation(async () => {
+      const start = Date.now();
+      try {
+        await this.connectInternal(options);
+        this.recordSuccess(start);
+        this.reportOperation("connect", start, true);
+      } catch (error) {
+        this.recordFailure(start, this.classifyErrorCode(error));
+        this.reportOperation("connect", start, false, this.asError(error));
+        throw error;
       }
-
-      this.recordSuccess(start);
-    } catch (error) {
-      this.recordFailure(start, this.classifyErrorCode(error));
-      throw error;
-    }
+    });
   }
 
   /**
    * Disconnects from PLC and releases transport resources.
    */
   public async disconnect(): Promise<void> {
-    const start = Date.now();
-    let disconnectError: unknown;
-
-    if (this.s7CommPlusClient !== null) {
-      try {
-        this.s7CommPlusClient.disconnect();
-      } catch (error) {
-        disconnectError = error;
-      }
-    }
-
-    if (this.legacyClient !== null) {
-      try {
-        await this.legacyClient.disconnect();
-      } catch (error) {
-        if (disconnectError === undefined) {
-          disconnectError = error;
-        }
-      }
-    }
-
-    this.activeProtocol = null;
-    this.s7CommPlusClient = null;
-    this.legacyClient = null;
-
-    if (disconnectError !== undefined) {
-      this.recordFailure(start, 0x0004);
-      throw new Snap7ConnectionError(
-        disconnectError instanceof Error ? disconnectError.message : "Failed to disconnect unified AsyncClient"
-      );
-    }
-    this.recordSuccess(start);
+    await this.enqueueOperation(async () => {
+      const start = Date.now();
+      await this.disconnectInternal();
+      this.recordSuccess(start);
+      this.reportOperation("disconnect", start, true);
+    });
   }
 
   /**
    * Reads raw bytes from a DB segment.
    */
-  public dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array> {
+  public async dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array> {
     const startMs = Date.now();
-    const op = async (): Promise<Uint8Array> => {
-      if (this.activeProtocol === "s7commplus") {
-        return this.requireS7CommPlusClient().dbRead(dbNumber, start, size);
-      }
-
-      if (this.activeProtocol === "legacy") {
-        return this.requireLegacyClient().dbRead(dbNumber, start, size);
-      }
-
-      throw new Snap7ConnectionError("AsyncClient is not connected");
-    };
-
-    return op()
-      .then((value) => {
-        this.recordSuccess(startMs);
-        return value;
-      })
-      .catch((error: unknown) => {
-        this.recordFailure(startMs, this.classifyErrorCode(error));
-        throw error;
+    try {
+      const value = await this.executeReliably("dbRead", true, async () => {
+        if (this.activeProtocol === "s7commplus") {
+          return this.requireS7CommPlusClient().dbRead(dbNumber, start, size);
+        }
+        if (this.activeProtocol === "legacy") {
+          return this.requireLegacyClient().dbRead(dbNumber, start, size);
+        }
+        throw new Snap7ConnectionError("AsyncClient is not connected");
       });
+      this.recordSuccess(startMs);
+      return value;
+    } catch (error) {
+      this.recordFailure(startMs, this.classifyErrorCode(error));
+      throw error;
+    }
   }
 
   /**
    * Writes raw bytes to a DB segment.
    */
-  public dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void> {
+  public async dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void> {
     const startMs = Date.now();
-    const op = async (): Promise<void> => {
-      if (this.activeProtocol === "s7commplus") {
-        await this.requireS7CommPlusClient().dbWrite(dbNumber, start, data);
-        return;
-      }
-
-      if (this.activeProtocol === "legacy") {
-        await this.requireLegacyClient().dbWrite(dbNumber, start, data);
-        return;
-      }
-
-      throw new Snap7ConnectionError("AsyncClient is not connected");
-    };
-
-    return op()
-      .then(() => {
-        this.recordSuccess(startMs);
-      })
-      .catch((error: unknown) => {
-        this.recordFailure(startMs, this.classifyErrorCode(error));
-        throw error;
+    try {
+      await this.executeReliably("dbWrite", false, async () => {
+        if (this.activeProtocol === "s7commplus") {
+          await this.requireS7CommPlusClient().dbWrite(dbNumber, start, data);
+          return;
+        }
+        if (this.activeProtocol === "legacy") {
+          await this.requireLegacyClient().dbWrite(dbNumber, start, data);
+          return;
+        }
+        throw new Snap7ConnectionError("AsyncClient is not connected");
       });
+      this.recordSuccess(startMs);
+    } catch (error) {
+      this.recordFailure(startMs, this.classifyErrorCode(error));
+      throw error;
+    }
   }
 
   /**
@@ -396,25 +402,22 @@ export class AsyncClient {
   public async dbReadMulti(items: DbReadItem[]): Promise<Uint8Array[]> {
     const startMs = Date.now();
     try {
-      if (this.activeProtocol === "s7commplus") {
-        const out = await this.requireS7CommPlusClient().dbReadMulti(
-          items.map((item) => [item.dbNumber, item.start, item.size] as const)
-        );
-        this.recordSuccess(startMs);
-        return out;
-      }
-
-      if (this.activeProtocol === "legacy") {
-        const legacyClient = this.requireLegacyClient();
-        const out: Uint8Array[] = [];
-        for (const item of items) {
-          out.push(await legacyClient.dbRead(item.dbNumber, item.start, item.size));
+      const value = await this.executeReliably("dbReadMulti", true, async () => {
+        if (this.activeProtocol === "s7commplus") {
+          return this.requireS7CommPlusClient().dbReadMulti(items.map((item) => [item.dbNumber, item.start, item.size] as const));
         }
-        this.recordSuccess(startMs);
-        return out;
-      }
-
-      throw new Snap7ConnectionError("AsyncClient is not connected");
+        if (this.activeProtocol === "legacy") {
+          const legacyClient = this.requireLegacyClient();
+          const out: Uint8Array[] = [];
+          for (const item of items) {
+            out.push(await legacyClient.dbRead(item.dbNumber, item.start, item.size));
+          }
+          return out;
+        }
+        throw new Snap7ConnectionError("AsyncClient is not connected");
+      });
+      this.recordSuccess(startMs);
+      return value;
     } catch (error) {
       this.recordFailure(startMs, this.classifyErrorCode(error));
       throw error;
@@ -493,11 +496,13 @@ export class AsyncClient {
    * This capability is provided by legacy S7 USER_DATA services.
    */
   public async listBlocks(): Promise<BlocksList> {
-    const legacy = this.requireLegacyClientForBlockOps();
-    if (legacy.listBlocks === undefined) {
-      throw new Error("Legacy client does not support listBlocks");
-    }
-    return legacy.listBlocks();
+    return this.executeReliably("listBlocks", true, async () => {
+      const legacy = this.requireLegacyClientForBlockOps();
+      if (legacy.listBlocks === undefined) {
+        throw new Error("Legacy client does not support listBlocks");
+      }
+      return legacy.listBlocks();
+    });
   }
 
   /**
@@ -506,11 +511,13 @@ export class AsyncClient {
    * This capability is provided by legacy S7 USER_DATA services.
    */
   public async listBlocksOfType(blockType: Block, maxCount: number): Promise<number[]> {
-    const legacy = this.requireLegacyClientForBlockOps();
-    if (legacy.listBlocksOfType === undefined) {
-      throw new Error("Legacy client does not support listBlocksOfType");
-    }
-    return legacy.listBlocksOfType(blockType, maxCount);
+    return this.executeReliably("listBlocksOfType", true, async () => {
+      const legacy = this.requireLegacyClientForBlockOps();
+      if (legacy.listBlocksOfType === undefined) {
+        throw new Error("Legacy client does not support listBlocksOfType");
+      }
+      return legacy.listBlocksOfType(blockType, maxCount);
+    });
   }
 
   /**
@@ -519,11 +526,13 @@ export class AsyncClient {
    * This capability is provided by legacy S7 USER_DATA services.
    */
   public async getBlockInfo(blockType: Block, blockNumber: number): Promise<TS7BlockInfo> {
-    const legacy = this.requireLegacyClientForBlockOps();
-    if (legacy.getBlockInfo === undefined) {
-      throw new Error("Legacy client does not support getBlockInfo");
-    }
-    return legacy.getBlockInfo(blockType, blockNumber);
+    return this.executeReliably("getBlockInfo", true, async () => {
+      const legacy = this.requireLegacyClientForBlockOps();
+      if (legacy.getBlockInfo === undefined) {
+        throw new Error("Legacy client does not support getBlockInfo");
+      }
+      return legacy.getBlockInfo(blockType, blockNumber);
+    });
   }
 
   /**
@@ -572,187 +581,221 @@ export class AsyncClient {
    * Upload DB block payload from PLC.
    */
   public async upload(blockNumber: number): Promise<Uint8Array> {
-    const legacy = this.requireLegacyClientForBlockOps();
-    if (legacy.upload === undefined) {
-      throw new Error("Legacy client does not support upload");
-    }
-    return legacy.upload(blockNumber);
+    return this.executeReliably("upload", true, async () => {
+      const legacy = this.requireLegacyClientForBlockOps();
+      if (legacy.upload === undefined) {
+        throw new Error("Legacy client does not support upload");
+      }
+      return legacy.upload(blockNumber);
+    });
   }
 
   /**
    * Upload complete block image with header/footer wrapper.
    */
   public async fullUpload(blockType: Block, blockNumber: number): Promise<readonly [Uint8Array, number]> {
-    const legacy = this.requireLegacyClientForBlockOps();
-    if (legacy.fullUpload === undefined) {
-      throw new Error("Legacy client does not support fullUpload");
-    }
-    return legacy.fullUpload(blockType, blockNumber);
+    return this.executeReliably("fullUpload", true, async () => {
+      const legacy = this.requireLegacyClientForBlockOps();
+      if (legacy.fullUpload === undefined) {
+        throw new Error("Legacy client does not support fullUpload");
+      }
+      return legacy.fullUpload(blockType, blockNumber);
+    });
   }
 
   /**
    * Download block bytes to PLC.
    */
   public async download(data: Uint8Array, blockNumber = -1): Promise<number> {
-    const legacy = this.requireLegacyClientForBlockOps();
-    if (legacy.download === undefined) {
-      throw new Error("Legacy client does not support download");
-    }
-    return legacy.download(data, blockNumber);
+    return this.executeReliably("download", false, async () => {
+      const legacy = this.requireLegacyClientForBlockOps();
+      if (legacy.download === undefined) {
+        throw new Error("Legacy client does not support download");
+      }
+      return legacy.download(data, blockNumber);
+    });
   }
 
   /**
    * Delete one PLC block.
    */
   public async delete(blockType: Block, blockNumber: number): Promise<number> {
-    const legacy = this.requireLegacyClientForBlockOps();
-    if (legacy.delete === undefined) {
-      throw new Error("Legacy client does not support delete");
-    }
-    return legacy.delete(blockType, blockNumber);
+    return this.executeReliably("delete", false, async () => {
+      const legacy = this.requireLegacyClientForBlockOps();
+      if (legacy.delete === undefined) {
+        throw new Error("Legacy client does not support delete");
+      }
+      return legacy.delete(blockType, blockNumber);
+    });
   }
 
   /**
    * Stop PLC CPU.
    */
   public async plcStop(): Promise<number> {
-    const legacy = this.requireLegacyClientForServiceOps("PLC control");
-    if (legacy.plcStop === undefined) {
-      throw new Error("Legacy client does not support plcStop");
-    }
-    return legacy.plcStop();
+    return this.executeReliably("plcStop", false, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("PLC control");
+      if (legacy.plcStop === undefined) {
+        throw new Error("Legacy client does not support plcStop");
+      }
+      return legacy.plcStop();
+    });
   }
 
   /**
    * Hot-start PLC CPU.
    */
   public async plcHotStart(): Promise<number> {
-    const legacy = this.requireLegacyClientForServiceOps("PLC control");
-    if (legacy.plcHotStart === undefined) {
-      throw new Error("Legacy client does not support plcHotStart");
-    }
-    return legacy.plcHotStart();
+    return this.executeReliably("plcHotStart", false, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("PLC control");
+      if (legacy.plcHotStart === undefined) {
+        throw new Error("Legacy client does not support plcHotStart");
+      }
+      return legacy.plcHotStart();
+    });
   }
 
   /**
    * Cold-start PLC CPU.
    */
   public async plcColdStart(): Promise<number> {
-    const legacy = this.requireLegacyClientForServiceOps("PLC control");
-    if (legacy.plcColdStart === undefined) {
-      throw new Error("Legacy client does not support plcColdStart");
-    }
-    return legacy.plcColdStart();
+    return this.executeReliably("plcColdStart", false, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("PLC control");
+      if (legacy.plcColdStart === undefined) {
+        throw new Error("Legacy client does not support plcColdStart");
+      }
+      return legacy.plcColdStart();
+    });
   }
 
   /**
    * Read PLC date/time.
    */
   public async getPlcDatetime(): Promise<Date> {
-    const legacy = this.requireLegacyClientForServiceOps("Clock API");
-    if (legacy.getPlcDatetime === undefined) {
-      throw new Error("Legacy client does not support getPlcDatetime");
-    }
-    return legacy.getPlcDatetime();
+    return this.executeReliably("getPlcDatetime", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("Clock API");
+      if (legacy.getPlcDatetime === undefined) {
+        throw new Error("Legacy client does not support getPlcDatetime");
+      }
+      return legacy.getPlcDatetime();
+    });
   }
 
   /**
    * Set PLC date/time.
    */
   public async setPlcDatetime(value: Date): Promise<number> {
-    const legacy = this.requireLegacyClientForServiceOps("Clock API");
-    if (legacy.setPlcDatetime === undefined) {
-      throw new Error("Legacy client does not support setPlcDatetime");
-    }
-    return legacy.setPlcDatetime(value);
+    return this.executeReliably("setPlcDatetime", false, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("Clock API");
+      if (legacy.setPlcDatetime === undefined) {
+        throw new Error("Legacy client does not support setPlcDatetime");
+      }
+      return legacy.setPlcDatetime(value);
+    });
   }
 
   /**
    * Set PLC date/time to local system time.
    */
   public async setPlcSystemDatetime(): Promise<number> {
-    const legacy = this.requireLegacyClientForServiceOps("Clock API");
-    if (legacy.setPlcSystemDatetime === undefined) {
-      throw new Error("Legacy client does not support setPlcSystemDatetime");
-    }
-    return legacy.setPlcSystemDatetime();
+    return this.executeReliably("setPlcSystemDatetime", false, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("Clock API");
+      if (legacy.setPlcSystemDatetime === undefined) {
+        throw new Error("Legacy client does not support setPlcSystemDatetime");
+      }
+      return legacy.setPlcSystemDatetime();
+    });
   }
 
   /**
    * Read CPU state.
    */
   public async getCpuState(): Promise<string> {
-    const legacy = this.requireLegacyClientForServiceOps("CPU state API");
-    if (legacy.getCpuState === undefined) {
-      throw new Error("Legacy client does not support getCpuState");
-    }
-    return legacy.getCpuState();
+    return this.executeReliably("getCpuState", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("CPU state API");
+      if (legacy.getCpuState === undefined) {
+        throw new Error("Legacy client does not support getCpuState");
+      }
+      return legacy.getCpuState();
+    });
   }
 
   /**
    * Read one SZL entry.
    */
   public async readSzl(szlId: number, index = 0): Promise<S7SZL> {
-    const legacy = this.requireLegacyClientForServiceOps("SZL API");
-    if (legacy.readSzl === undefined) {
-      throw new Error("Legacy client does not support readSzl");
-    }
-    return legacy.readSzl(szlId, index);
+    return this.executeReliably("readSzl", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("SZL API");
+      if (legacy.readSzl === undefined) {
+        throw new Error("Legacy client does not support readSzl");
+      }
+      return legacy.readSzl(szlId, index);
+    });
   }
 
   /**
    * Read CPU identification fields.
    */
   public async getCpuInfo(): Promise<S7CpuInfo> {
-    const legacy = this.requireLegacyClientForServiceOps("CPU info API");
-    if (legacy.getCpuInfo === undefined) {
-      throw new Error("Legacy client does not support getCpuInfo");
-    }
-    return legacy.getCpuInfo();
+    return this.executeReliably("getCpuInfo", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("CPU info API");
+      if (legacy.getCpuInfo === undefined) {
+        throw new Error("Legacy client does not support getCpuInfo");
+      }
+      return legacy.getCpuInfo();
+    });
   }
 
   /**
    * Read communication processor info fields.
    */
   public async getCpInfo(): Promise<S7CpInfo> {
-    const legacy = this.requireLegacyClientForServiceOps("CP info API");
-    if (legacy.getCpInfo === undefined) {
-      throw new Error("Legacy client does not support getCpInfo");
-    }
-    return legacy.getCpInfo();
+    return this.executeReliably("getCpInfo", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("CP info API");
+      if (legacy.getCpInfo === undefined) {
+        throw new Error("Legacy client does not support getCpInfo");
+      }
+      return legacy.getCpInfo();
+    });
   }
 
   /**
    * Read module order code.
    */
   public async getOrderCode(): Promise<S7OrderCode> {
-    const legacy = this.requireLegacyClientForServiceOps("Order code API");
-    if (legacy.getOrderCode === undefined) {
-      throw new Error("Legacy client does not support getOrderCode");
-    }
-    return legacy.getOrderCode();
+    return this.executeReliably("getOrderCode", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("Order code API");
+      if (legacy.getOrderCode === undefined) {
+        throw new Error("Legacy client does not support getOrderCode");
+      }
+      return legacy.getOrderCode();
+    });
   }
 
   /**
    * Read protection configuration.
    */
   public async getProtection(): Promise<S7Protection> {
-    const legacy = this.requireLegacyClientForServiceOps("Protection API");
-    if (legacy.getProtection === undefined) {
-      throw new Error("Legacy client does not support getProtection");
-    }
-    return legacy.getProtection();
+    return this.executeReliably("getProtection", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("Protection API");
+      if (legacy.getProtection === undefined) {
+        throw new Error("Legacy client does not support getProtection");
+      }
+      return legacy.getProtection();
+    });
   }
 
   /**
    * Exchange raw ISO payload bytes with legacy transport.
    */
   public async isoExchangeBuffer(data: Uint8Array): Promise<Uint8Array> {
-    const legacy = this.requireLegacyClientForServiceOps("ISO exchange");
-    if (legacy.isoExchangeBuffer === undefined) {
-      throw new Error("Legacy client does not support isoExchangeBuffer");
-    }
-    return legacy.isoExchangeBuffer(data);
+    return this.executeReliably("isoExchangeBuffer", true, async () => {
+      const legacy = this.requireLegacyClientForServiceOps("ISO exchange");
+      if (legacy.isoExchangeBuffer === undefined) {
+        throw new Error("Legacy client does not support isoExchangeBuffer");
+      }
+      return legacy.isoExchangeBuffer(data);
+    });
   }
 
   /**
@@ -1003,22 +1046,24 @@ export class AsyncClient {
   ): Promise<Uint8Array> {
     const startMs = Date.now();
     try {
-      const bytesPerElement = this.bytesPerElement(wordLen);
-      const maxElementsPerChunk = Math.max(1, Math.floor(this.maxReadSize() / bytesPerElement));
-      let remaining = size;
-      let currentStart = start;
-      const chunks: Uint8Array[] = [];
+      const result = await this.executeReliably("readArea", true, async () => {
+        const bytesPerElement = this.bytesPerElement(wordLen);
+        const maxElementsPerChunk = Math.max(1, Math.floor(this.maxReadSize() / bytesPerElement));
+        let remaining = size;
+        let currentStart = start;
+        const chunks: Uint8Array[] = [];
 
-      while (remaining > 0) {
-        const chunkElements = Math.min(remaining, maxElementsPerChunk);
-        const chunk = await this.readAreaChunk(area, dbNumber, currentStart, chunkElements, wordLen);
-        chunks.push(chunk);
-        remaining -= chunkElements;
-        currentStart += chunkElements;
-      }
-
+        while (remaining > 0) {
+          const chunkElements = Math.min(remaining, maxElementsPerChunk);
+          const chunk = await this.readAreaChunk(area, dbNumber, currentStart, chunkElements, wordLen);
+          chunks.push(chunk);
+          remaining -= chunkElements;
+          currentStart += chunkElements;
+        }
+        return this.concatChunks(chunks);
+      });
       this.recordSuccess(startMs);
-      return this.concatChunks(chunks);
+      return result;
     } catch (error) {
       this.recordFailure(startMs, this.classifyErrorCode(error));
       throw error;
@@ -1037,27 +1082,28 @@ export class AsyncClient {
   ): Promise<void> {
     const startMs = Date.now();
     try {
-      const bytesPerElement = this.bytesPerElement(wordLen);
-      if (data.length % bytesPerElement !== 0) {
-        throw new Error(`Data length ${data.length} is not aligned for word length ${wordLen}`);
-      }
+      await this.executeReliably("writeArea", false, async () => {
+        const bytesPerElement = this.bytesPerElement(wordLen);
+        if (data.length % bytesPerElement !== 0) {
+          throw new Error(`Data length ${data.length} is not aligned for word length ${wordLen}`);
+        }
 
-      const totalElements = data.length / bytesPerElement;
-      const maxElementsPerChunk = Math.max(1, Math.floor(this.maxWriteSize() / bytesPerElement));
-      let remaining = totalElements;
-      let currentStart = start;
-      let offsetBytes = 0;
+        const totalElements = data.length / bytesPerElement;
+        const maxElementsPerChunk = Math.max(1, Math.floor(this.maxWriteSize() / bytesPerElement));
+        let remaining = totalElements;
+        let currentStart = start;
+        let offsetBytes = 0;
 
-      while (remaining > 0) {
-        const chunkElements = Math.min(remaining, maxElementsPerChunk);
-        const chunkBytes = chunkElements * bytesPerElement;
-        const chunkData = data.slice(offsetBytes, offsetBytes + chunkBytes);
-        await this.writeAreaChunk(area, dbNumber, currentStart, chunkData, wordLen);
-        remaining -= chunkElements;
-        currentStart += chunkElements;
-        offsetBytes += chunkBytes;
-      }
-
+        while (remaining > 0) {
+          const chunkElements = Math.min(remaining, maxElementsPerChunk);
+          const chunkBytes = chunkElements * bytesPerElement;
+          const chunkData = data.slice(offsetBytes, offsetBytes + chunkBytes);
+          await this.writeAreaChunk(area, dbNumber, currentStart, chunkData, wordLen);
+          remaining -= chunkElements;
+          currentStart += chunkElements;
+          offsetBytes += chunkBytes;
+        }
+      });
       this.recordSuccess(startMs);
     } catch (error) {
       this.recordFailure(startMs, this.classifyErrorCode(error));
@@ -1158,6 +1204,59 @@ export class AsyncClient {
         );
       }
     }
+  }
+
+  private async connectInternal(options: ConnectOptions): Promise<void> {
+    this.hostValue = options.address;
+    this.preferredProtocol = options.protocol ?? "auto";
+    await this.disconnectInternal();
+
+    if (this.preferredProtocol === "legacy") {
+      await this.connectLegacy(options);
+    } else if (this.preferredProtocol === "s7commplus") {
+      await this.connectS7CommPlus(options);
+    } else {
+      await this.connectAuto(options);
+    }
+
+    this.lastConnectOptions = { ...options };
+    this.startHeartbeat();
+  }
+
+  private async disconnectInternal(): Promise<void> {
+    this.stopHeartbeat();
+    let disconnectError: unknown;
+
+    if (this.s7CommPlusClient !== null) {
+      try {
+        this.s7CommPlusClient.disconnect();
+      } catch (error) {
+        disconnectError = error;
+      }
+    }
+
+    if (this.legacyClient !== null) {
+      try {
+        await this.legacyClient.disconnect();
+      } catch (error) {
+        if (disconnectError === undefined) {
+          disconnectError = error;
+        }
+      }
+    }
+
+    this.activeProtocol = null;
+    this.s7CommPlusClient = null;
+    this.legacyClient = null;
+
+    if (disconnectError !== undefined) {
+      const err = new Snap7ConnectionError(
+        disconnectError instanceof Error ? disconnectError.message : "Failed to disconnect unified AsyncClient"
+      );
+      this.hooks.onDisconnect?.(err);
+      throw err;
+    }
+    this.hooks.onDisconnect?.(null);
   }
 
   private async connectLegacy(options: ConnectOptions): Promise<void> {
@@ -1404,5 +1503,128 @@ export class AsyncClient {
       out += String.fromCharCode(view.getUint16(i, false));
     }
     return out;
+  }
+
+  private enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.opQueue.then(operation, operation);
+    this.opQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async executeReliably<T>(name: string, retryOnReconnect: boolean, operation: () => Promise<T>): Promise<T> {
+    return this.enqueueOperation(async () => {
+      const start = Date.now();
+      try {
+        const value = await operation();
+        this.reportOperation(name, start, true);
+        return value;
+      } catch (error) {
+        if (retryOnReconnect && this.shouldAttemptReconnect(error)) {
+          await this.reconnectWithBackoff(this.asError(error));
+          const value = await operation();
+          this.reportOperation(name, start, true);
+          return value;
+        }
+        this.reportOperation(name, start, false, this.asError(error));
+        throw error;
+      }
+    });
+  }
+
+  private shouldAttemptReconnect(error: unknown): boolean {
+    if (!this.autoReconnect || this.lastConnectOptions === null) {
+      return false;
+    }
+    const err = this.asError(error);
+    const msg = err.message.toLowerCase();
+    return (
+      err instanceof Snap7ConnectionError ||
+      msg.includes("not connected") ||
+      msg.includes("socket") ||
+      msg.includes("transport") ||
+      msg.includes("connection")
+    );
+  }
+
+  private async reconnectWithBackoff(reason: Error): Promise<void> {
+    const baseOptions = this.lastConnectOptions;
+    if (baseOptions === null) {
+      throw reason;
+    }
+
+    let delayMs = Math.max(1, this.reconnectInitialDelayMs);
+    for (let attempt = 1; attempt <= Math.max(1, this.maxReconnectAttempts); attempt += 1) {
+      try {
+        await this.disconnectInternal();
+        await this.connectInternal(baseOptions);
+        this.hooks.onReconnect?.(attempt);
+        return;
+      } catch (error) {
+        if (attempt >= this.maxReconnectAttempts) {
+          throw this.asError(error);
+        }
+      }
+      await this.sleep(delayMs);
+      delayMs = Math.min(Math.floor(delayMs * this.reconnectBackoffFactor), this.reconnectMaxDelayMs);
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    if (this.heartbeatIntervalMs <= 0) {
+      return;
+    }
+    this.heartbeatTimer = setInterval(() => {
+      void this.onHeartbeatTick();
+    }, this.heartbeatIntervalMs);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private async onHeartbeatTick(): Promise<void> {
+    if (this.heartbeatRunning) {
+      return;
+    }
+    this.heartbeatRunning = true;
+    try {
+      await this.executeReliably("heartbeat", true, async () => {
+        if (!this.connected) {
+          throw new Snap7ConnectionError("Heartbeat detected disconnected client");
+        }
+        if (this.activeProtocol === "legacy" && this.legacyClient?.getCpuState !== undefined) {
+          await this.legacyClient.getCpuState();
+        }
+      });
+    } catch {
+      // heartbeats are best-effort; failures are reported via hooks
+    } finally {
+      this.heartbeatRunning = false;
+    }
+  }
+
+  private reportOperation(name: string, startMs: number, success: boolean, error?: Error): void {
+    const durationMs = Date.now() - startMs;
+    this.hooks.onOperation?.(name, durationMs, success, error);
+  }
+
+  private asError(error: unknown): Error {
+    if (error instanceof Error) {
+      return error;
+    }
+    return new Error(String(error));
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
   }
 }
