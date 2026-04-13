@@ -34,7 +34,14 @@ class ControlLegacyClient implements LegacyClientLike {
 class ControlPlusClient implements S7CommPlusClientLike {
   public connected = false;
 
-  public connect(_options: { host: string; port?: number }): Promise<void> {
+  public connect(_options: {
+    host: string;
+    port?: number;
+    useTls?: boolean;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): Promise<void> {
     void _options;
     this.connected = true;
     return Promise.resolve();

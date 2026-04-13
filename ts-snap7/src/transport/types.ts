@@ -1,4 +1,5 @@
 import type { EventEmitter } from "node:events";
+import type { ConnectionOptions } from "node:tls";
 
 /**
  * Transport connection state.
@@ -21,6 +22,15 @@ export interface TransportConnectOptions {
  * Request/receive options for transport-level packet exchange.
  */
 export interface TransportRequestOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * TLS upgrade options for existing ISO-on-TCP socket.
+ */
+export interface TransportTlsOptions {
+  tlsOptions: ConnectionOptions;
   timeoutMs?: number;
   signal?: AbortSignal;
 }

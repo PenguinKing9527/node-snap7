@@ -8,7 +8,18 @@ export interface S7CommPlusConnectionLike {
   sessionSetupOk: boolean;
   sessionId: number;
   protocolVersion: number;
-  connect(options: { host: string; port?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<void>;
+  tlsActive?: boolean;
+  omsSecret?: Uint8Array | null;
+  connect(options: {
+    host: string;
+    port?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    useTls?: boolean;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): Promise<void>;
   disconnect(): void;
   sendRequest(functionCode: number, payload?: Uint8Array): Promise<Uint8Array>;
 }
@@ -41,7 +52,25 @@ export class S7CommPlusAsyncClient {
     return this.connection.protocolVersion;
   }
 
-  public async connect(options: { host: string; port?: number; timeoutMs?: number; signal?: AbortSignal }): Promise<void> {
+  public get tlsActive(): boolean {
+    return this.connection.tlsActive ?? false;
+  }
+
+  public get omsSecret(): Uint8Array | null {
+    const value = this.connection.omsSecret;
+    return value === undefined || value === null ? null : value.slice();
+  }
+
+  public async connect(options: {
+    host: string;
+    port?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    useTls?: boolean;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): Promise<void> {
     await this.connection.connect(options);
   }
 

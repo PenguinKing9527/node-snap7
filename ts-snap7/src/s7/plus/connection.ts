@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import type { ConnectionOptions } from "node:tls";
+
 import {
   FunctionCode,
   S7COMMPLUS_LOCAL_TSAP,
@@ -8,12 +11,14 @@ import {
 } from "../../core/index.js";
 import { Snap7ConnectionError, Snap7ProtocolError } from "../../errors/index.js";
 import { AsyncIsoTransport } from "../../transport/index.js";
-import type { TransportConnectOptions, TransportRequestOptions } from "../../transport/types.js";
+import type { TransportConnectOptions, TransportRequestOptions, TransportTlsOptions } from "../../transport/types.js";
 import { buildCreateSessionPayload } from "./payload.js";
 
 export interface PlusTransport {
   connect(options: TransportConnectOptions): Promise<void>;
   request(payload: Uint8Array, options?: TransportRequestOptions): Promise<Uint8Array>;
+  activateTls?(options: TransportTlsOptions): Promise<void>;
+  getTlsExporterSecret?(label: string, length: number): Uint8Array | null;
   disconnect(): void;
 }
 
@@ -65,6 +70,8 @@ export class S7CommPlusConnection {
   private sessionSetupOkValue = false;
   private sessionIdValue = 0;
   private protocolVersionValue = 1;
+  private tlsActiveValue = false;
+  private omsSecretValue: Uint8Array | null = null;
 
   public constructor(transport?: PlusTransport) {
     this.transport = transport ?? new AsyncIsoTransport();
@@ -86,11 +93,23 @@ export class S7CommPlusConnection {
     return this.protocolVersionValue;
   }
 
+  public get tlsActive(): boolean {
+    return this.tlsActiveValue;
+  }
+
+  public get omsSecret(): Uint8Array | null {
+    return this.omsSecretValue === null ? null : this.omsSecretValue.slice();
+  }
+
   public async connect(options: {
     host: string;
     port?: number;
     timeoutMs?: number;
     signal?: AbortSignal;
+    useTls?: boolean;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
   }): Promise<void> {
     const connectOptions: TransportConnectOptions = {
       host: options.host,
@@ -108,6 +127,9 @@ export class S7CommPlusConnection {
     try {
       await this.transport.connect(connectOptions);
       await this.sendInitSsl(options.timeoutMs, options.signal);
+      if (options.useTls === true) {
+        await this.activateTls(options);
+      }
       await this.createSession(options.timeoutMs, options.signal);
       this.connectedValue = true;
     } catch (error) {
@@ -126,6 +148,8 @@ export class S7CommPlusConnection {
     this.sessionIdValue = 0;
     this.sequence = 0;
     this.protocolVersionValue = 1;
+    this.tlsActiveValue = false;
+    this.omsSecretValue = null;
   }
 
   public async sendRequest(
@@ -181,6 +205,31 @@ export class S7CommPlusConnection {
     }
   }
 
+  private async activateTls(options: {
+    host: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): Promise<void> {
+    if (this.transport.activateTls === undefined) {
+      throw new Snap7ConnectionError("Transport does not support TLS activation");
+    }
+
+    const tlsOptions = this.buildTlsOptions(options);
+    const activateOptions: TransportTlsOptions = { tlsOptions };
+    if (options.timeoutMs !== undefined) {
+      activateOptions.timeoutMs = options.timeoutMs;
+    }
+    if (options.signal !== undefined) {
+      activateOptions.signal = options.signal;
+    }
+    await this.transport.activateTls(activateOptions);
+    this.tlsActiveValue = true;
+    this.omsSecretValue = this.transport.getTlsExporterSecret?.("EXPERIMENTAL_OMS", 32) ?? null;
+  }
+
   private async exchangeFrame(frame: Uint8Array, options: TransportRequestOptions): Promise<Uint8Array> {
     const response = await this.transport.request(wrapCotpDt(frame), options);
     return unwrapCotpDt(response);
@@ -215,4 +264,31 @@ export class S7CommPlusConnection {
     }
     return out;
   }
+
+  private buildTlsOptions(options: {
+    host: string;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): ConnectionOptions {
+    const out: ConnectionOptions = {
+      minVersion: "TLSv1.3",
+      servername: options.host
+    };
+
+    if (options.tlsCert !== undefined && options.tlsKey !== undefined) {
+      out.cert = readFileSync(options.tlsCert);
+      out.key = readFileSync(options.tlsKey);
+    }
+
+    if (options.tlsCa !== undefined) {
+      out.ca = readFileSync(options.tlsCa);
+      out.rejectUnauthorized = true;
+    } else {
+      out.rejectUnauthorized = false;
+    }
+
+    return out;
+  }
+
 }

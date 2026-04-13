@@ -17,4 +17,11 @@ export const transportStatus: TransportStatus = {
 export { AsyncIsoTransport } from "./async-iso-transport.js";
 export { COTP_CC, COTP_CR, decodeCotpConnectionConfirm, encodeCotpConnectionRequest } from "./cotp.js";
 export { decodeTpktHeader, encodeTpkt, TPKT_VERSION } from "./tpkt.js";
-export type { SocketFactory, SocketLike, TransportConnectOptions, TransportRequestOptions, TransportState } from "./types.js";
+export type {
+  SocketFactory,
+  SocketLike,
+  TransportConnectOptions,
+  TransportRequestOptions,
+  TransportState,
+  TransportTlsOptions
+} from "./types.js";

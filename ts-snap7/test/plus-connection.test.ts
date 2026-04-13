@@ -26,10 +26,20 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
 class FakePlusTransport implements PlusTransport {
   public requests: Uint8Array[] = [];
   public connectOptions: TransportConnectOptions | null = null;
+  public tlsActivated = false;
 
   public connect(options: TransportConnectOptions): Promise<void> {
     this.connectOptions = options;
     return Promise.resolve();
+  }
+
+  public activateTls(): Promise<void> {
+    this.tlsActivated = true;
+    return Promise.resolve();
+  }
+
+  public getTlsExporterSecret(): Uint8Array | null {
+    return Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
   }
 
   public request(payload: Uint8Array, _options?: TransportRequestOptions): Promise<Uint8Array> {
@@ -73,5 +83,15 @@ describe("S7CommPlusConnection", () => {
 
     const response = await connection.sendRequest(FunctionCode.GET_MULTI_VARIABLES, Uint8Array.of(0xaa));
     expect(Array.from(response)).toEqual([0x99, 0x88]);
+  });
+
+  it("activates TLS and exports OMS secret when requested", async () => {
+    const transport = new FakePlusTransport();
+    const connection = new S7CommPlusConnection(transport);
+
+    await connection.connect({ host: "127.0.0.1", port: 102, useTls: true });
+    expect(transport.tlsActivated).toBe(true);
+    expect(connection.tlsActive).toBe(true);
+    expect(Array.from(connection.omsSecret ?? new Uint8Array())).toEqual([0xde, 0xad, 0xbe, 0xef]);
   });
 });

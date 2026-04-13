@@ -7,6 +7,7 @@ This document defines the release checklist for open-source publication.
 - All task gates passed for the milestone.
 - Human review completed.
 - Branch is up to date with target base.
+- Stage acceptance report exists for current milestone (for Stage 2: `docs/STAGE2_CLIENT_ACCEPTANCE.md`).
 
 ## 1. Version Bump
 
@@ -54,3 +55,10 @@ Use your organization's preferred release flow if it differs.
 - Verify package appears on npm.
 - Validate install and import from a clean sample project.
 - Tag and announce release notes.
+
+## Stage 2 Acceptance Evidence (Client Scope)
+
+Before Stage 2 release sign-off, confirm the acceptance report includes:
+- parity summary for client-only scope versus `python-snap7`
+- test and release-check evidence (`pnpm run release:check`)
+- known risks and explicit out-of-scope notes

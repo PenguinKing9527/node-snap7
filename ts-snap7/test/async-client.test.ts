@@ -35,13 +35,30 @@ class FakeLegacyClient implements LegacyClientLike {
 class FakeS7CommPlusClient implements S7CommPlusClientLike {
   public connected = false;
   public connectCalls = 0;
+  public lastConnectOptions:
+    | {
+        host: string;
+        port?: number;
+        useTls?: boolean;
+        tlsCert?: string;
+        tlsKey?: string;
+        tlsCa?: string;
+      }
+    | null = null;
   public readCalls: Array<{ dbNumber: number; start: number; size: number }> = [];
   public writeCalls: Array<{ dbNumber: number; start: number; data: Uint8Array }> = [];
   public readMultiCalls: Array<Array<readonly [number, number, number]>> = [];
 
-  public connect(_options: { host: string; port?: number }): Promise<void> {
-    void _options;
+  public connect(_options: {
+    host: string;
+    port?: number;
+    useTls?: boolean;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): Promise<void> {
     this.connectCalls += 1;
+    this.lastConnectOptions = _options;
     this.connected = true;
     return Promise.resolve();
   }
@@ -116,7 +133,14 @@ describe("AsyncClient (Task 6 unified routing)", () => {
   it("uses s7commplus first in auto mode and falls back to legacy on connect failure", async () => {
     const legacy = new FakeLegacyClient();
     const plus = new FakeS7CommPlusClient();
-    plus.connect = (_options: { host: string; port?: number }) => {
+    plus.connect = (_options: {
+      host: string;
+      port?: number;
+      useTls?: boolean;
+      tlsCert?: string;
+      tlsKey?: string;
+      tlsCa?: string;
+    }) => {
       void _options;
       plus.connectCalls += 1;
       return Promise.reject(new Snap7ConnectionError("plus unavailable"));
@@ -166,7 +190,14 @@ describe("AsyncClient (Task 6 unified routing)", () => {
         dbWrite: () => Promise.resolve()
       }),
       createS7CommPlusClient: () => ({
-        connect: (_options: { host: string; port?: number }) => {
+        connect: (_options: {
+          host: string;
+          port?: number;
+          useTls?: boolean;
+          tlsCert?: string;
+          tlsKey?: string;
+          tlsCa?: string;
+        }) => {
           void _options;
           return Promise.reject(new Snap7ConnectionError("plus failed"));
         },
@@ -180,5 +211,30 @@ describe("AsyncClient (Task 6 unified routing)", () => {
     await expect(client.connect({ address: "127.0.0.1", protocol: "auto" })).rejects.toThrow(
       "Auto protocol negotiation failed"
     );
+  });
+
+  it("passes TLS options to s7commplus connect", async () => {
+    const plus = new FakeS7CommPlusClient();
+    const client = new AsyncClient({
+      createLegacyClient: () => new FakeLegacyClient(),
+      createS7CommPlusClient: () => plus
+    });
+
+    await client.connect({
+      address: "127.0.0.1",
+      protocol: "s7commplus",
+      use_tls: true,
+      tls_cert: "client.crt",
+      tls_key: "client.key",
+      tls_ca: "ca.crt"
+    });
+
+    expect(plus.lastConnectOptions).toEqual({
+      host: "127.0.0.1",
+      useTls: true,
+      tlsCert: "client.crt",
+      tlsKey: "client.key",
+      tlsCa: "ca.crt"
+    });
   });
 });

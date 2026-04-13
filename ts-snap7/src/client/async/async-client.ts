@@ -73,7 +73,14 @@ export interface LegacyClientLike {
  */
 export interface S7CommPlusClientLike {
   readonly connected?: boolean;
-  connect(options: { host: string; port?: number }): Promise<void>;
+  connect(options: {
+    host: string;
+    port?: number;
+    useTls?: boolean;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): Promise<void>;
   disconnect(): void;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
@@ -1281,9 +1288,34 @@ export class AsyncClient {
 
   private async connectS7CommPlus(options: ConnectOptions): Promise<void> {
     const plusClient = this.createS7CommPlusClient();
-    const connectOptions: { host: string; port?: number } = { host: options.address };
+    const connectOptions: {
+      host: string;
+      port?: number;
+      useTls?: boolean;
+      tlsCert?: string;
+      tlsKey?: string;
+      tlsCa?: string;
+    } = {
+      host: options.address
+    };
     if (options.tcpPort !== undefined) {
       connectOptions.port = options.tcpPort;
+    }
+    const useTls = options.useTls ?? options.use_tls;
+    const tlsCert = options.tlsCert ?? options.tls_cert;
+    const tlsKey = options.tlsKey ?? options.tls_key;
+    const tlsCa = options.tlsCa ?? options.tls_ca;
+    if (useTls !== undefined) {
+      connectOptions.useTls = useTls;
+    }
+    if (tlsCert !== undefined) {
+      connectOptions.tlsCert = tlsCert;
+    }
+    if (tlsKey !== undefined) {
+      connectOptions.tlsKey = tlsKey;
+    }
+    if (tlsCa !== undefined) {
+      connectOptions.tlsCa = tlsCa;
     }
     await plusClient.connect(connectOptions);
     this.s7CommPlusClient = plusClient;

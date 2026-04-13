@@ -6,7 +6,8 @@ import { Block } from "../src/types.js";
 class FakeLegacyWithBlocks implements LegacyClientLike {
   public connected = false;
 
-  public connect(): Promise<void> {
+  public connect(_options: { address: string; rack?: number; slot?: number; tcpPort?: number }): Promise<void> {
+    void _options;
     this.connected = true;
     return Promise.resolve();
   }

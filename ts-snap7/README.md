@@ -4,17 +4,26 @@ Async-first TypeScript implementation of Siemens S7 communication protocols, ali
 
 ## Status
 
-Current implemented milestone:
+Current completed milestone:
 - Async-only client model (no sync client)
-- Legacy S7 minimal async DB read/write path
-- S7CommPlus V1 minimal async DB read/write path
+- Legacy S7 + S7CommPlus V1 unified async client
 - Unified `AsyncClient` with `auto` / `legacy` / `s7commplus` selection
+- Client parity coverage for Stage 2 scope:
+  - connection/session params and diagnostics
+  - generic area I/O (`read_area` / `write_area` + `ab/eb/mb/tm/ct`)
+  - DB extended helpers and typed DB read/write helpers
+  - multi-variable operations (`read_multi_vars` / `write_multi_vars`)
+  - block catalog/info, upload/download/delete
+  - PLC control/device info/SZL
+  - `iso_exchange_buffer` and compatibility error text mapping
+  - production reliability hooks (auto reconnect, heartbeat, op queue, observability)
 - Dual build output (`ESM` + `CJS`)
 - Strict TypeScript + Vitest + CI verification workflow
 
-Out of scope for current milestone:
+Stage 2 scope guard (intentional exclusions):
 - Synchronous client API
-- Advanced protocol features beyond minimal DB read/write paths
+- `Server` / `Partner` / discovery modules
+- Unplanned Stage 3+ expansion
 
 ## Install
 
@@ -47,9 +56,19 @@ await client.disconnect();
 - `new AsyncClient()`
 - `connect(options: ConnectOptions): Promise<void>`
 - `disconnect(): Promise<void>`
+- `setConnectionParams` / `setConnectionType` / `setParam` / `getParam`
+- `getExecTime` / `getLastError` / `errorText` / `getPduLength`
 - `dbRead(dbNumber, start, size): Promise<Uint8Array>`
 - `dbWrite(dbNumber, start, data): Promise<void>`
 - `dbReadMulti(items): Promise<Uint8Array[]>`
+- `readArea` / `writeArea` and `ab|eb|mb|tm|ct` helpers
+- typed DB helpers (`dbReadInt`, `dbWriteReal`, `dbReadString`, ...)
+- `readMultiVars` / `writeMultiVars`
+- block and transfer operations (`listBlocks`, `getBlockInfo`, `upload`, `download`, ...)
+- PLC/system information and control (`plcStop`, `getCpuInfo`, `readSzl`, ...)
+- low-level exchange (`isoExchangeBuffer`)
+
+For a stage acceptance summary and verification evidence, see `docs/STAGE2_CLIENT_ACCEPTANCE.md`.
 
 ## Development
 
@@ -66,6 +85,7 @@ pnpm run verify
 
 - Contribution guide: `CONTRIBUTING.md`
 - Release checklist: `RELEASING.md`
+- Stage 2 acceptance evidence: `docs/STAGE2_CLIENT_ACCEPTANCE.md`
 - License: `LICENSE`
 
 ## Notes

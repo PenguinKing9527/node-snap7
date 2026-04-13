@@ -191,6 +191,14 @@ export interface ConnectOptions {
   slot?: number;
   tcpPort?: number;
   protocol?: ProtocolSelection;
+  useTls?: boolean;
+  tlsCert?: string;
+  tlsKey?: string;
+  tlsCa?: string;
+  use_tls?: boolean;
+  tls_cert?: string;
+  tls_key?: string;
+  tls_ca?: string;
 }
 
 /**

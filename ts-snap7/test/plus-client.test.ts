@@ -20,9 +20,21 @@ class FakeConnection implements S7CommPlusConnectionLike {
   public sessionSetupOk = false;
   public sessionId = 0;
   public protocolVersion = 1;
+  public tlsActive = false;
+  public omsSecret: Uint8Array | null = null;
   public sentFunctions: number[] = [];
 
-  public connect(): Promise<void> {
+  public connect(_options: {
+    host: string;
+    port?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    useTls?: boolean;
+    tlsCert?: string;
+    tlsKey?: string;
+    tlsCa?: string;
+  }): Promise<void> {
+    void _options;
     this.connected = true;
     this.sessionSetupOk = true;
     this.sessionId = 0x1234;
