@@ -71,6 +71,15 @@ export enum LegitimationId {
 }
 
 /**
+ * Function codes that consume read-side IntegrityId in protocol V2+.
+ */
+export const READ_FUNCTION_CODES: ReadonlySet<number> = new Set<number>([
+  FunctionCode.GET_MULTI_VARIABLES,
+  FunctionCode.EXPLORE,
+  FunctionCode.GET_VAR_SUBSTREAMED
+]);
+
+/**
  * S7CommPlus object model element identifiers.
  */
 export enum ElementID {
@@ -83,12 +92,15 @@ export enum ElementID {
  * Well-known object identifiers used during session setup.
  */
 export enum ObjectId {
+  NONE = 0,
   GET_NEW_RID_ON_SERVER = 211,
   CLASS_SUBSCRIPTIONS = 255,
+  CLASS_SERVER_SESSION_CONTAINER = 284,
   OBJECT_SERVER_SESSION_CONTAINER = 285,
   CLASS_SERVER_SESSION = 287,
   OBJECT_NULL_SERVER_SESSION = 288,
-  SERVER_SESSION_CLIENT_RID = 300
+  SERVER_SESSION_CLIENT_RID = 300,
+  SERVER_SESSION_VERSION = 306
 }
 
 /**

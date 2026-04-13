@@ -107,6 +107,14 @@ export class S7CommPlusAsyncClient {
   }
 
   /**
+   * Browse PLC object tree (S7CommPlus only).
+   */
+  public async explore(): Promise<Uint8Array> {
+    this.ensureConnected();
+    return this.connection.sendRequest(FunctionCode.EXPLORE, new Uint8Array(0));
+  }
+
+  /**
    * Perform PLC password authentication (legitimation).
    *
    * Requirements:
@@ -169,7 +177,7 @@ export class S7CommPlusAsyncClient {
     if (offset + length > response.length) {
       throw new Snap7ConnectionError("Challenge response length exceeds payload");
     }
-    if (datatype !== DataType.BLOB && datatype !== DataType.USINT) {
+    if (datatype !== Number(DataType.BLOB) && datatype !== Number(DataType.USINT)) {
       throw new Snap7ConnectionError(`Unexpected challenge datatype: 0x${datatype.toString(16).padStart(2, "0")}`);
     }
     return response.slice(offset, offset + length);

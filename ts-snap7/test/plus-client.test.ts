@@ -107,7 +107,7 @@ describe("S7CommPlusAsyncClient", () => {
     await expect(client.authenticate("plc-password")).resolves.toBeUndefined();
 
     expect(connection.sentFunctions).toContain(FunctionCode.GET_VAR_SUBSTREAMED);
-    expect(connection.sentFunctions.filter((fn) => fn === FunctionCode.SET_VARIABLE).length).toBeGreaterThan(0);
+    expect(connection.sentFunctions.filter((fn) => fn === Number(FunctionCode.SET_VARIABLE)).length).toBeGreaterThan(0);
   });
 
   it("rejects authenticate without TLS exporter secret", async () => {

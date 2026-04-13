@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FunctionCode, encodeHeader, encodeRequestHeader } from "../src/core/index.js";
+import { FunctionCode, ObjectId, encodeHeader, encodeRequestHeader, encodeUint32Vlq } from "../src/core/index.js";
 import { S7CommPlusConnection } from "../src/s7/plus/index.js";
 import type { PlusTransport } from "../src/s7/plus/index.js";
 import type { TransportConnectOptions, TransportRequestOptions } from "../src/transport/types.js";
@@ -57,7 +57,21 @@ class FakePlusTransport implements PlusTransport {
     }
     if (fn === (FunctionCode.CREATE_OBJECT as number)) {
       const respHeader = encodeRequestHeader(FunctionCode.CREATE_OBJECT, 2, 0x12345678, 0x36);
-      return Promise.resolve(wrapCotpDt(concat(encodeHeader(1, respHeader.length), respHeader)));
+      const createPayload = Uint8Array.of(
+        0xa3,
+        ...encodeUint32Vlq(ObjectId.SERVER_SESSION_VERSION),
+        0x00,
+        0x04,
+        ...encodeUint32Vlq(1)
+      );
+      return Promise.resolve(
+        wrapCotpDt(concat(encodeHeader(1, respHeader.length + createPayload.length), respHeader, createPayload))
+      );
+    }
+    if (fn === (FunctionCode.SET_MULTI_VARIABLES as number)) {
+      const respHeader = encodeRequestHeader(FunctionCode.SET_MULTI_VARIABLES, 3, 0x12345678, 0x36);
+      const payloadData = Uint8Array.of(0x00);
+      return Promise.resolve(wrapCotpDt(concat(encodeHeader(1, respHeader.length + payloadData.length), respHeader, payloadData)));
     }
 
     const respHeader = encodeRequestHeader(fn, 3, 0x12345678, 0x36);

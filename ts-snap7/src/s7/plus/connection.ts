@@ -2,12 +2,21 @@ import { readFileSync } from "node:fs";
 import type { ConnectionOptions } from "node:tls";
 
 import {
+  DataType,
+  ElementID,
   FunctionCode,
+  ObjectId,
+  READ_FUNCTION_CODES,
+  decodeUint32Vlq,
+  decodeUint64Vlq,
   S7COMMPLUS_LOCAL_TSAP,
   S7COMMPLUS_REMOTE_TSAP,
   decodeHeader,
   encodeHeader,
-  encodeRequestHeader
+  encodeObjectQualifier,
+  encodeRequestHeader,
+  encodeUint32,
+  encodeUint32Vlq
 } from "../../core/index.js";
 import { Snap7ConnectionError, Snap7ProtocolError } from "../../errors/index.js";
 import { AsyncIsoTransport } from "../../transport/index.js";
@@ -72,6 +81,10 @@ export class S7CommPlusConnection {
   private protocolVersionValue = 1;
   private tlsActiveValue = false;
   private omsSecretValue: Uint8Array | null = null;
+  private serverSessionVersion: number | null = null;
+  private withIntegrityId = false;
+  private integrityIdRead = 0;
+  private integrityIdWrite = 0;
 
   public constructor(transport?: PlusTransport) {
     this.transport = transport ?? new AsyncIsoTransport();
@@ -132,6 +145,18 @@ export class S7CommPlusConnection {
       }
       await this.createSession(options.timeoutMs, options.signal);
       this.connectedValue = true;
+      if (this.protocolVersionValue === 2 && !this.tlsActiveValue) {
+        throw new Snap7ConnectionError("PLC reports V2 protocol but TLS is not active. V2 requires TLS.");
+      }
+      this.withIntegrityId = this.protocolVersionValue >= 2;
+      this.integrityIdRead = 0;
+      this.integrityIdWrite = 0;
+
+      if (this.serverSessionVersion !== null) {
+        this.sessionSetupOkValue = await this.setupSession(options.timeoutMs, options.signal);
+      } else {
+        this.sessionSetupOkValue = false;
+      }
     } catch (error) {
       this.disconnect();
       if (error instanceof Snap7ConnectionError || error instanceof Snap7ProtocolError) {
@@ -150,6 +175,10 @@ export class S7CommPlusConnection {
     this.protocolVersionValue = 1;
     this.tlsActiveValue = false;
     this.omsSecretValue = null;
+    this.serverSessionVersion = null;
+    this.withIntegrityId = false;
+    this.integrityIdRead = 0;
+    this.integrityIdWrite = 0;
   }
 
   public async sendRequest(
@@ -162,7 +191,18 @@ export class S7CommPlusConnection {
     }
 
     const requestHeader = encodeRequestHeader(functionCode, this.nextSequence(), this.sessionIdValue, 0x36);
-    const requestData = this.concat(requestHeader, payload);
+    let integrityPart = new Uint8Array(0);
+    if (this.withIntegrityId && this.protocolVersionValue >= 2) {
+      const isRead = READ_FUNCTION_CODES.has(functionCode);
+      const integrity = isRead ? this.integrityIdRead : this.integrityIdWrite;
+      integrityPart = new Uint8Array(encodeUint32Vlq(integrity >>> 0));
+      if (isRead) {
+        this.integrityIdRead = (this.integrityIdRead + 1) >>> 0;
+      } else {
+        this.integrityIdWrite = (this.integrityIdWrite + 1) >>> 0;
+      }
+    }
+    const requestData = this.concat(requestHeader, integrityPart, payload);
     const frame = this.withTrailer(encodeHeader(this.protocolVersionValue, requestData.length), requestData, this.protocolVersionValue);
     const responseFrame = await this.exchangeFrame(frame, options);
     return this.parseResponsePayload(responseFrame);
@@ -181,12 +221,7 @@ export class S7CommPlusConnection {
   }
 
   private async createSession(timeoutMs?: number, signal?: AbortSignal): Promise<void> {
-    const requestHeader = encodeRequestHeader(
-      FunctionCode.CREATE_OBJECT,
-      this.nextSequence(),
-      288, // OBJECT_NULL_SERVER_SESSION
-      0x36
-    );
+    const requestHeader = encodeRequestHeader(FunctionCode.CREATE_OBJECT, this.nextSequence(), ObjectId.OBJECT_NULL_SERVER_SESSION, 0x36);
     const requestData = this.concat(requestHeader, buildCreateSessionPayload());
     const frame = this.withTrailer(encodeHeader(1, requestData.length), requestData, 1);
     const responseFrame = await this.exchangeFrame(frame, withOptionalRequestFields(timeoutMs, signal));
@@ -199,10 +234,10 @@ export class S7CommPlusConnection {
     const rv = new DataView(response.buffer, response.byteOffset, response.length);
     this.sessionIdValue = rv.getUint32(9, false);
     this.protocolVersionValue = version;
-    this.sessionSetupOkValue = this.sessionIdValue !== 0;
-    if (!this.sessionSetupOkValue) {
+    if (this.sessionIdValue === 0) {
       throw new Snap7ProtocolError("CreateObject failed: PLC did not assign session ID");
     }
+    this.serverSessionVersion = this.parseCreateObjectResponse(response.slice(14));
   }
 
   private async activateTls(options: {
@@ -233,6 +268,87 @@ export class S7CommPlusConnection {
   private async exchangeFrame(frame: Uint8Array, options: TransportRequestOptions): Promise<Uint8Array> {
     const response = await this.transport.request(wrapCotpDt(frame), options);
     return unwrapCotpDt(response);
+  }
+
+  private async setupSession(timeoutMs?: number, signal?: AbortSignal): Promise<boolean> {
+    if (this.serverSessionVersion === null) {
+      return false;
+    }
+
+    const payload = this.concat(
+      encodeUint32(this.sessionIdValue),
+      encodeUint32Vlq(1),
+      encodeUint32Vlq(1),
+      encodeUint32Vlq(ObjectId.SERVER_SESSION_VERSION),
+      encodeUint32Vlq(1),
+      Uint8Array.of(0x00, DataType.UDINT),
+      encodeUint32Vlq(this.serverSessionVersion),
+      Uint8Array.of(0x00),
+      encodeObjectQualifier(),
+      encodeUint32(0)
+    );
+
+    try {
+      const response = await this.sendRequest(FunctionCode.SET_MULTI_VARIABLES, payload, withOptionalRequestFields(timeoutMs, signal));
+      if (response.length === 0) {
+        return false;
+      }
+      const [returnValue] = decodeUint64Vlq(response, 0);
+      return returnValue === 0n;
+    } catch {
+      return false;
+    }
+  }
+
+  private parseCreateObjectResponse(payload: Uint8Array): number | null {
+    let offset = 0;
+    while (offset < payload.length) {
+      const tag = payload[offset] ?? 0;
+      if (tag === Number(ElementID.ATTRIBUTE)) {
+        offset += 1;
+        const [attributeId, attrUsed] = decodeUint32Vlq(payload, offset);
+        offset += attrUsed;
+        if (offset + 2 > payload.length) {
+          return null;
+        }
+        offset += 1; // flags
+        const datatype = payload[offset] ?? 0;
+        offset += 1;
+
+        const [value, valueUsed] = decodeUint32Vlq(payload, offset);
+        offset += valueUsed;
+        if (
+          attributeId === Number(ObjectId.SERVER_SESSION_VERSION) &&
+          (datatype === Number(DataType.UDINT) || datatype === Number(DataType.DWORD))
+        ) {
+          return value;
+        }
+        continue;
+      }
+
+      if (tag === Number(ElementID.START_OF_OBJECT)) {
+        offset += 1;
+        if (offset + 4 > payload.length) {
+          return null;
+        }
+        offset += 4;
+        const [, c1] = decodeUint32Vlq(payload, offset);
+        offset += c1;
+        const [, c2] = decodeUint32Vlq(payload, offset);
+        offset += c2;
+        const [, c3] = decodeUint32Vlq(payload, offset);
+        offset += c3;
+        continue;
+      }
+
+      if (tag === Number(ElementID.TERMINATING_OBJECT) || tag === 0x00) {
+        offset += 1;
+        continue;
+      }
+
+      offset += 1;
+    }
+    return null;
   }
 
   private parseResponsePayload(responseFrame: Uint8Array): Uint8Array {

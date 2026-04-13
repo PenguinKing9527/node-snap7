@@ -83,6 +83,7 @@ export interface S7CommPlusClientLike {
   }): Promise<void>;
   disconnect(): void;
   authenticate?(password: string, username?: string): Promise<void>;
+  explore?(): Promise<Uint8Array>;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
   dbReadMulti(items: Array<readonly [number, number, number]>): Promise<Uint8Array[]>;
@@ -448,6 +449,22 @@ export class AsyncClient {
         throw new Error("S7CommPlus client does not support authenticate");
       }
       await plus.authenticate(password, username);
+    });
+  }
+
+  /**
+   * Browse PLC object tree over S7CommPlus.
+   */
+  public async explore(): Promise<Uint8Array> {
+    return this.executeReliably("explore", true, async () => {
+      if (this.activeProtocol !== "s7commplus") {
+        throw new Error("explore requires s7commplus protocol connection");
+      }
+      const plus = this.requireS7CommPlusClient();
+      if (plus.explore === undefined) {
+        throw new Error("S7CommPlus client does not support explore");
+      }
+      return plus.explore();
     });
   }
 
@@ -1655,8 +1672,6 @@ export class AsyncClient {
           await this.legacyClient.getCpuState();
         }
       });
-    } catch {
-      // heartbeats are best-effort; failures are reported via hooks
     } finally {
       this.heartbeatRunning = false;
     }

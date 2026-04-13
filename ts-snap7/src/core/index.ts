@@ -24,6 +24,7 @@ export {
   ObjectId,
   Opcode,
   PROTOCOL_ID,
+  READ_FUNCTION_CODES,
   S7COMMPLUS_LOCAL_TSAP,
   S7COMMPLUS_REMOTE_TSAP
 } from "./protocol.js";
