@@ -14,6 +14,12 @@ export type {
   MultiVarReadResult,
   MultiVarWriteItem,
   ProtocolSelection,
+  S7CpInfo,
+  S7CpuInfo,
+  S7OrderCode,
+  S7Protection,
+  S7SZL,
+  S7SZLHeader,
   TS7BlockInfo
 } from "./types.js";
 

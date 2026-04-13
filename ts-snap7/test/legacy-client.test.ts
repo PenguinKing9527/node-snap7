@@ -61,9 +61,11 @@ class FakeLegacyTransport implements LegacyTransport {
 
     if (pduType === S7PduType.USERDATA) {
       const subfunction = s7Request[16];
+      const typeGroup = s7Request[15] ?? 0x43;
+      const group = typeGroup & 0x0f;
       const params = Uint8Array.of(0x00, 0x01, 0x12, 0x08, 0x12, 0x43, subfunction ?? 0, 0x10, 0x00, 0x00, 0x00, 0x00);
 
-      if (subfunction === 0x01) {
+      if (group === 0x03 && subfunction === 0x01) {
         const payloadBytes = Uint8Array.of(0x30, 0x41, 0x00, 0x02, 0x30, 0x38, 0x00, 0x01);
         const data = new Uint8Array(4 + payloadBytes.length);
         data.set([0xff, 0x09, 0x00, payloadBytes.length], 0);
@@ -71,12 +73,51 @@ class FakeLegacyTransport implements LegacyTransport {
         return Promise.resolve(wrapCotpDt(buildUserDataResponse(params, data, 4)));
       }
 
-      if (subfunction === 0x02) {
+      if (group === 0x03 && subfunction === 0x02) {
         const payloadBytes = Uint8Array.of(0x00, 0x65, 0x00, 0x00, 0x00, 0x66, 0x00, 0x00);
         const data = new Uint8Array(4 + payloadBytes.length);
         data.set([0xff, 0x09, 0x00, payloadBytes.length], 0);
         data.set(payloadBytes, 4);
         return Promise.resolve(wrapCotpDt(buildUserDataResponse(params, data, 5)));
+      }
+
+      if (group === 0x04 && subfunction === 0x01) {
+        const szlPayload = Uint8Array.of(
+          0x00,
+          0x1c,
+          0x00,
+          0x00,
+          // ModuleTypeName (32)
+          ...Array.from({ length: 32 }, (_v, i) => (i < 6 ? "CPU151".charCodeAt(i) : 0x00)),
+          // SerialNumber (24)
+          ...Array.from({ length: 24 }, (_v, i) => (i < 8 ? "SERIAL01".charCodeAt(i) : 0x00)),
+          // ASName (24)
+          ...Array.from({ length: 24 }, (_v, i) => (i < 5 ? "AS-01".charCodeAt(i) : 0x00)),
+          // Copyright (26)
+          ...Array.from({ length: 26 }, (_v, i) => (i < 7 ? "SIEMENS".charCodeAt(i) : 0x00)),
+          // ModuleName (24)
+          ...Array.from({ length: 24 }, (_v, i) => (i < 10 ? "MODULE-XYZ".charCodeAt(i) : 0x00))
+        );
+        const userDataParams = Uint8Array.of(0x00, 0x01, 0x12, 0x08, 0x12, 0x44, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00);
+        const data = new Uint8Array(4 + szlPayload.length);
+        data.set([0xff, 0x09, (szlPayload.length >> 8) & 0xff, szlPayload.length & 0xff], 0);
+        data.set(szlPayload, 4);
+        return Promise.resolve(wrapCotpDt(buildUserDataResponse(userDataParams, data, 14)));
+      }
+
+      if (group === 0x07 && subfunction === 0x01) {
+        const payloadBytes = Uint8Array.of(0x00, 0x26, 0x04, 0x13, 0x10, 0x20, 0x30, 0x01);
+        const userDataParams = Uint8Array.of(0x00, 0x01, 0x12, 0x08, 0x12, 0x47, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00);
+        const data = new Uint8Array(4 + payloadBytes.length);
+        data.set([0xff, 0x09, 0x00, payloadBytes.length], 0);
+        data.set(payloadBytes, 4);
+        return Promise.resolve(wrapCotpDt(buildUserDataResponse(userDataParams, data, 15)));
+      }
+
+      if (group === 0x07 && subfunction === 0x02) {
+        const userDataParams = Uint8Array.of(0x00, 0x01, 0x12, 0x08, 0x12, 0x47, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00);
+        const data = Uint8Array.of(0xff, 0x09, 0x00, 0x00);
+        return Promise.resolve(wrapCotpDt(buildUserDataResponse(userDataParams, data, 16)));
       }
 
       const payloadBytes = new Uint8Array(78);
@@ -242,5 +283,37 @@ describe("LegacyS7AsyncClient", () => {
 
     await expect(client.download(Uint8Array.of(1, 2, 3, 4), 1)).resolves.toBe(0);
     await expect(client.delete(Block.DB, 1)).resolves.toBe(0);
+  });
+
+  it("supports plc control, clock and szl-derived info APIs", async () => {
+    const transport = new FakeLegacyTransport();
+    const client = new LegacyS7AsyncClient(transport);
+    await client.connect({ address: "127.0.0.1", rack: 0, slot: 1 });
+
+    await expect(client.plcStop()).resolves.toBe(0);
+    await expect(client.plcHotStart()).resolves.toBe(0);
+    await expect(client.plcColdStart()).resolves.toBe(0);
+
+    const dt = await client.getPlcDatetime();
+    expect(dt.getFullYear()).toBe(2026);
+    await expect(client.setPlcDatetime(new Date(2026, 3, 13, 11, 22, 33))).resolves.toBe(0);
+
+    const cpuState = await client.getCpuState();
+    expect(cpuState).toBe("S7CpuStatusRun");
+
+    const cpuInfo = await client.getCpuInfo();
+    expect(cpuInfo.ModuleTypeName).toContain("CPU151");
+
+    const cpInfo = await client.getCpInfo();
+    expect(cpInfo.MaxPduLength).toBeGreaterThanOrEqual(0);
+
+    const orderCode = await client.getOrderCode();
+    expect(orderCode.OrderCode).toBeTypeOf("string");
+
+    const protection = await client.getProtection();
+    expect(protection.sch_schal).toBeGreaterThanOrEqual(0);
+
+    const szl = await client.readSzl(0x001c, 0);
+    expect(szl.Header.LengthDR).toBeGreaterThan(0);
   });
 });

@@ -215,4 +215,46 @@ describe("LegacyS7Protocol", () => {
     expect(startRes.uploadId).toBe(1);
     expect(startRes.blockLength).toBe(128);
   });
+
+  it("builds PLC control/clock/SZL requests and parses clock/SZL payloads", () => {
+    const protocol = new LegacyS7Protocol();
+
+    const stop = protocol.buildPlcControlRequest("stop");
+    expect(stop[10]).toBe(0x29);
+    const hot = protocol.buildPlcControlRequest("hot_start");
+    expect(hot[10]).toBe(0x28);
+    const cold = protocol.buildPlcControlRequest("cold_start");
+    expect(cold[10]).toBe(0x28);
+
+    const readSzl = protocol.buildReadSzlRequest(0x001c, 0);
+    expect(readSzl[1]).toBe(S7PduType.USERDATA);
+
+    const getClock = protocol.buildGetClockRequest();
+    expect(getClock[1]).toBe(S7PduType.USERDATA);
+
+    const setClock = protocol.buildSetClockRequest(new Date(2026, 3, 13, 10, 20, 30));
+    expect(setClock[1]).toBe(S7PduType.USERDATA);
+
+    const clockRaw = Uint8Array.of(0x00, 0x26, 0x04, 0x13, 0x10, 0x20, 0x30, 0x01);
+    const parsedClock = protocol.parseGetClockResponse({
+      sequence: 1,
+      parameterLength: 0,
+      dataLength: 8,
+      returnCode: 0xff,
+      data: clockRaw
+    });
+    expect(parsedClock.getFullYear()).toBe(2026);
+    expect(parsedClock.getMonth()).toBe(3);
+    expect(parsedClock.getDate()).toBe(13);
+
+    const parsedSzl = protocol.parseReadSzlResponse({
+      sequence: 1,
+      parameterLength: 0,
+      dataLength: 8,
+      returnCode: 0xff,
+      data: Uint8Array.of(0x00, 0x1c, 0x00, 0x00, 1, 2, 3, 4)
+    });
+    expect(parsedSzl.szlId).toBe(0x001c);
+    expect(Array.from(parsedSzl.data)).toEqual([1, 2, 3, 4]);
+  });
 });

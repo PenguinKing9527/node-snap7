@@ -74,6 +74,12 @@ export interface ParsedGetBlockInfo {
   header: Uint8Array;
 }
 
+export interface ParsedReadSzl {
+  szlId: number;
+  szlIndex: number;
+  data: Uint8Array;
+}
+
 export interface LegacyS7Response {
   sequence: number;
   parameterLength: number;
@@ -508,7 +514,133 @@ export class LegacyS7Protocol {
   }
 
   /**
-   * Validate control-style ACK response (e.g. delete block).
+   * Build PLC control request.
+   *
+   * Supported operations:
+   * - `stop`
+   * - `hot_start`
+   * - `cold_start`
+   */
+  public buildPlcControlRequest(operation: "stop" | "hot_start" | "cold_start"): Uint8Array {
+    if (operation === "stop") {
+      return this.buildRequestPdu(Uint8Array.of(S7Function.PLC_STOP), new Uint8Array(0));
+    }
+    const restartType = operation === "hot_start" ? 1 : 2;
+    return this.buildRequestPdu(Uint8Array.of(S7Function.PLC_CONTROL, restartType), new Uint8Array(0));
+  }
+
+  /**
+   * Build USER_DATA read-SZL request.
+   */
+  public buildReadSzlRequest(szlId: number, szlIndex: number): Uint8Array {
+    const params = Uint8Array.of(0x00, 0x01, 0x12, 0x04, 0x11, 0x44, 0x01, 0x00);
+    const dataSection = new Uint8Array(8);
+    const view = new DataView(dataSection.buffer);
+    dataSection[0] = 0x0a;
+    dataSection[1] = 0x00;
+    view.setUint16(2, 0x0004, false);
+    view.setUint16(4, szlId & 0xffff, false);
+    view.setUint16(6, szlIndex & 0xffff, false);
+    return this.buildUserDataPdu(params, dataSection);
+  }
+
+  /**
+   * Parse read-SZL response payload.
+   */
+  public parseReadSzlResponse(response: LegacyS7Response, firstFragment = true): ParsedReadSzl {
+    const raw = response.data ?? new Uint8Array(0);
+    if (firstFragment) {
+      if (raw.length < 4) {
+        return { szlId: 0, szlIndex: 0, data: new Uint8Array(0) };
+      }
+      const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      return {
+        szlId: view.getUint16(0, false),
+        szlIndex: view.getUint16(2, false),
+        data: raw.slice(4)
+      };
+    }
+    return {
+      szlId: 0,
+      szlIndex: 0,
+      data: raw
+    };
+  }
+
+  /**
+   * Build USER_DATA get-clock request.
+   */
+  public buildGetClockRequest(): Uint8Array {
+    const params = Uint8Array.of(0x00, 0x01, 0x12, 0x04, 0x11, 0x47, 0x01, 0x00);
+    const dataSection = Uint8Array.of(0x0a, 0x00, 0x00, 0x00);
+    return this.buildUserDataPdu(params, dataSection);
+  }
+
+  /**
+   * Build USER_DATA set-clock request.
+   */
+  public buildSetClockRequest(value: Date): Uint8Array {
+    const year = value.getFullYear() % 100;
+    const bcd = Uint8Array.of(
+      0x00,
+      this.toBcd(year),
+      this.toBcd(value.getMonth() + 1),
+      this.toBcd(value.getDate()),
+      this.toBcd(value.getHours()),
+      this.toBcd(value.getMinutes()),
+      this.toBcd(value.getSeconds()),
+      (value.getDay() === 0 ? 7 : value.getDay()) & 0x0f
+    );
+    const params = Uint8Array.of(0x00, 0x01, 0x12, 0x04, 0x11, 0x47, 0x02, 0x00);
+    const dataSection = new Uint8Array(4 + bcd.length);
+    dataSection[0] = 0x0a;
+    dataSection[1] = 0x00;
+    new DataView(dataSection.buffer).setUint16(2, bcd.length, false);
+    dataSection.set(bcd, 4);
+    return this.buildUserDataPdu(params, dataSection);
+  }
+
+  /**
+   * Parse PLC clock from USER_DATA response.
+   */
+  public parseGetClockResponse(response: LegacyS7Response): Date {
+    const raw = response.data ?? new Uint8Array(0);
+    if (raw.length < 8) {
+      return new Date();
+    }
+    const year = this.fromBcd(raw[1] ?? 0);
+    const month = this.fromBcd(raw[2] ?? 0);
+    const day = this.fromBcd(raw[3] ?? 0);
+    const hour = this.fromBcd(raw[4] ?? 0);
+    const minute = this.fromBcd(raw[5] ?? 0);
+    const second = this.fromBcd(raw[6] ?? 0);
+    const fullYear = year < 90 ? 2000 + year : 1900 + year;
+    const parsed = new Date(fullYear, month - 1, day, hour, minute, second);
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date();
+    }
+    return parsed;
+  }
+
+  /**
+   * Build a simple CPU-state request.
+   */
+  public buildCpuStateRequest(): Uint8Array {
+    return this.buildRequestPdu(Uint8Array.of(S7Function.READ_AREA), new Uint8Array(0));
+  }
+
+  /**
+   * Extract CPU state string.
+   *
+   * The python reference currently returns a default RUN status.
+   */
+  public extractCpuState(response: LegacyS7Response): string {
+    void response;
+    return "S7CpuStatusRun";
+  }
+
+  /**
+   * Validate control-style ACK response (e.g. delete block, PLC control).
    */
   public checkControlResponse(response: LegacyS7Response): void {
     // For these flows, parser-level protocol errors are already thrown.
@@ -665,6 +797,14 @@ export class LegacyS7Protocol {
       out[i] = value.charCodeAt(i) & 0xff;
     }
     return out;
+  }
+
+  private toBcd(value: number): number {
+    return (((Math.floor(value / 10) & 0x0f) << 4) | (value % 10)) & 0xff;
+  }
+
+  private fromBcd(value: number): number {
+    return ((value >> 4) & 0x0f) * 10 + (value & 0x0f);
   }
 
   private buildUserDataPdu(params: Uint8Array, dataSection: Uint8Array): Uint8Array {

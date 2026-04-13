@@ -1,7 +1,20 @@
 import { Snap7ConnectionError } from "../../errors/index.js";
 import { LegacyS7AsyncClient } from "../../s7/legacy/index.js";
 import { S7CommPlusAsyncClient } from "../../s7/plus/index.js";
-import { Area, Block, ClientParameter, ConnectionType, WordLen, type BlocksList, type TS7BlockInfo } from "../../types.js";
+import {
+  Area,
+  Block,
+  ClientParameter,
+  ConnectionType,
+  WordLen,
+  type BlocksList,
+  type S7CpInfo,
+  type S7CpuInfo,
+  type S7OrderCode,
+  type S7Protection,
+  type S7SZL,
+  type TS7BlockInfo
+} from "../../types.js";
 import type {
   ConnectOptions,
   DbReadItem,
@@ -37,6 +50,18 @@ export interface LegacyClientLike {
   fullUpload?(blockType: Block, blockNumber: number): Promise<readonly [Uint8Array, number]>;
   download?(data: Uint8Array, blockNumber?: number): Promise<number>;
   delete?(blockType: Block, blockNumber: number): Promise<number>;
+  plcStop?(): Promise<number>;
+  plcHotStart?(): Promise<number>;
+  plcColdStart?(): Promise<number>;
+  getPlcDatetime?(): Promise<Date>;
+  setPlcDatetime?(value: Date): Promise<number>;
+  setPlcSystemDatetime?(): Promise<number>;
+  getCpuState?(): Promise<string>;
+  readSzl?(szlId: number, index?: number): Promise<S7SZL>;
+  getCpuInfo?(): Promise<S7CpuInfo>;
+  getCpInfo?(): Promise<S7CpInfo>;
+  getOrderCode?(): Promise<S7OrderCode>;
+  getProtection?(): Promise<S7Protection>;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
 }
@@ -587,6 +612,138 @@ export class AsyncClient {
   }
 
   /**
+   * Stop PLC CPU.
+   */
+  public async plcStop(): Promise<number> {
+    const legacy = this.requireLegacyClientForServiceOps("PLC control");
+    if (legacy.plcStop === undefined) {
+      throw new Error("Legacy client does not support plcStop");
+    }
+    return legacy.plcStop();
+  }
+
+  /**
+   * Hot-start PLC CPU.
+   */
+  public async plcHotStart(): Promise<number> {
+    const legacy = this.requireLegacyClientForServiceOps("PLC control");
+    if (legacy.plcHotStart === undefined) {
+      throw new Error("Legacy client does not support plcHotStart");
+    }
+    return legacy.plcHotStart();
+  }
+
+  /**
+   * Cold-start PLC CPU.
+   */
+  public async plcColdStart(): Promise<number> {
+    const legacy = this.requireLegacyClientForServiceOps("PLC control");
+    if (legacy.plcColdStart === undefined) {
+      throw new Error("Legacy client does not support plcColdStart");
+    }
+    return legacy.plcColdStart();
+  }
+
+  /**
+   * Read PLC date/time.
+   */
+  public async getPlcDatetime(): Promise<Date> {
+    const legacy = this.requireLegacyClientForServiceOps("Clock API");
+    if (legacy.getPlcDatetime === undefined) {
+      throw new Error("Legacy client does not support getPlcDatetime");
+    }
+    return legacy.getPlcDatetime();
+  }
+
+  /**
+   * Set PLC date/time.
+   */
+  public async setPlcDatetime(value: Date): Promise<number> {
+    const legacy = this.requireLegacyClientForServiceOps("Clock API");
+    if (legacy.setPlcDatetime === undefined) {
+      throw new Error("Legacy client does not support setPlcDatetime");
+    }
+    return legacy.setPlcDatetime(value);
+  }
+
+  /**
+   * Set PLC date/time to local system time.
+   */
+  public async setPlcSystemDatetime(): Promise<number> {
+    const legacy = this.requireLegacyClientForServiceOps("Clock API");
+    if (legacy.setPlcSystemDatetime === undefined) {
+      throw new Error("Legacy client does not support setPlcSystemDatetime");
+    }
+    return legacy.setPlcSystemDatetime();
+  }
+
+  /**
+   * Read CPU state.
+   */
+  public async getCpuState(): Promise<string> {
+    const legacy = this.requireLegacyClientForServiceOps("CPU state API");
+    if (legacy.getCpuState === undefined) {
+      throw new Error("Legacy client does not support getCpuState");
+    }
+    return legacy.getCpuState();
+  }
+
+  /**
+   * Read one SZL entry.
+   */
+  public async readSzl(szlId: number, index = 0): Promise<S7SZL> {
+    const legacy = this.requireLegacyClientForServiceOps("SZL API");
+    if (legacy.readSzl === undefined) {
+      throw new Error("Legacy client does not support readSzl");
+    }
+    return legacy.readSzl(szlId, index);
+  }
+
+  /**
+   * Read CPU identification fields.
+   */
+  public async getCpuInfo(): Promise<S7CpuInfo> {
+    const legacy = this.requireLegacyClientForServiceOps("CPU info API");
+    if (legacy.getCpuInfo === undefined) {
+      throw new Error("Legacy client does not support getCpuInfo");
+    }
+    return legacy.getCpuInfo();
+  }
+
+  /**
+   * Read communication processor info fields.
+   */
+  public async getCpInfo(): Promise<S7CpInfo> {
+    const legacy = this.requireLegacyClientForServiceOps("CP info API");
+    if (legacy.getCpInfo === undefined) {
+      throw new Error("Legacy client does not support getCpInfo");
+    }
+    return legacy.getCpInfo();
+  }
+
+  /**
+   * Read module order code.
+   */
+  public async getOrderCode(): Promise<S7OrderCode> {
+    const legacy = this.requireLegacyClientForServiceOps("Order code API");
+    if (legacy.getOrderCode === undefined) {
+      throw new Error("Legacy client does not support getOrderCode");
+    }
+    return legacy.getOrderCode();
+  }
+
+  /**
+   * Read protection configuration.
+   */
+  public async getProtection(): Promise<S7Protection> {
+    const legacy = this.requireLegacyClientForServiceOps("Protection API");
+    if (legacy.getProtection === undefined) {
+      throw new Error("Legacy client does not support getProtection");
+    }
+    return legacy.getProtection();
+  }
+
+  /**
    * Read an entire DB or an explicitly sized prefix.
    *
    * When `size <= 0`, this uses a conservative compatibility fallback
@@ -1052,6 +1209,13 @@ export class AsyncClient {
   private requireLegacyClientForBlockOps(): LegacyClientLike {
     if (this.activeProtocol === "s7commplus") {
       throw new Error("Block catalog/info APIs require legacy protocol connection");
+    }
+    return this.requireLegacyClient();
+  }
+
+  private requireLegacyClientForServiceOps(serviceName: string): LegacyClientLike {
+    if (this.activeProtocol === "s7commplus") {
+      throw new Error(`${serviceName} requires legacy protocol connection`);
     }
     return this.requireLegacyClient();
   }

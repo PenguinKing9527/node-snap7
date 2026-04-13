@@ -124,6 +124,64 @@ export interface TS7BlockInfo {
 }
 
 /**
+ * CPU identification fields compatible with python-snap7 `S7CpuInfo`.
+ */
+export interface S7CpuInfo {
+  ModuleTypeName: string;
+  SerialNumber: string;
+  ASName: string;
+  Copyright: string;
+  ModuleName: string;
+}
+
+/**
+ * Communication processor capability fields from SZL 0x0131.
+ */
+export interface S7CpInfo {
+  MaxPduLength: number;
+  MaxConnections: number;
+  MaxMpiRate: number;
+  MaxBusRate: number;
+}
+
+/**
+ * Order code and firmware version tuple from SZL 0x0011.
+ */
+export interface S7OrderCode {
+  OrderCode: string;
+  V1: number;
+  V2: number;
+  V3: number;
+}
+
+/**
+ * PLC protection levels from SZL 0x0232.
+ */
+export interface S7Protection {
+  sch_schal: number;
+  sch_par: number;
+  sch_rel: number;
+  bart_sch: number;
+  anl_sch: number;
+}
+
+/**
+ * Header metadata for SZL payloads.
+ */
+export interface S7SZLHeader {
+  LengthDR: number;
+  NDR: number;
+}
+
+/**
+ * System Status List payload returned by `readSzl`.
+ */
+export interface S7SZL {
+  Header: S7SZLHeader;
+  Data: Uint8Array;
+}
+
+/**
  * Connection options accepted by `AsyncClient.connect`.
  * Defaults are intentionally aligned with python-snap7 behavior.
  */

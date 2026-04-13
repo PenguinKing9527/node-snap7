@@ -1,5 +1,5 @@
 import { Snap7ConnectionError, Snap7ProtocolError } from "../../errors/index.js";
-import { Block, type BlocksList, type TS7BlockInfo } from "../../types.js";
+import { Block, type BlocksList, type S7CpInfo, type S7CpuInfo, type S7OrderCode, type S7Protection, type S7SZL, type TS7BlockInfo } from "../../types.js";
 import { AsyncIsoTransport } from "../../transport/index.js";
 import type { TransportConnectOptions, TransportRequestOptions } from "../../transport/types.js";
 import { LegacyS7Protocol, S7Area, S7WordLen } from "./protocol.js";
@@ -411,6 +411,174 @@ export class LegacyS7AsyncClient {
   }
 
   /**
+   * Stop PLC CPU.
+   */
+  public async plcStop(options: TransportRequestOptions = {}): Promise<number> {
+    this.ensureConnected();
+    const request = this.protocol.buildPlcControlRequest("stop");
+    const parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    this.protocol.checkControlResponse(parsed);
+    return 0;
+  }
+
+  /**
+   * Hot-start PLC CPU.
+   */
+  public async plcHotStart(options: TransportRequestOptions = {}): Promise<number> {
+    this.ensureConnected();
+    const request = this.protocol.buildPlcControlRequest("hot_start");
+    const parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    this.protocol.checkControlResponse(parsed);
+    return 0;
+  }
+
+  /**
+   * Cold-start PLC CPU.
+   */
+  public async plcColdStart(options: TransportRequestOptions = {}): Promise<number> {
+    this.ensureConnected();
+    const request = this.protocol.buildPlcControlRequest("cold_start");
+    const parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    this.protocol.checkControlResponse(parsed);
+    return 0;
+  }
+
+  /**
+   * Get PLC date/time from USER_DATA clock service.
+   */
+  public async getPlcDatetime(options: TransportRequestOptions = {}): Promise<Date> {
+    this.ensureConnected();
+    const request = this.protocol.buildGetClockRequest();
+    const parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    this.ensureSuccessReturnCode(parsed.returnCode, "Get PLC datetime");
+    return this.protocol.parseGetClockResponse(parsed);
+  }
+
+  /**
+   * Set PLC date/time via USER_DATA clock service.
+   */
+  public async setPlcDatetime(value: Date, options: TransportRequestOptions = {}): Promise<number> {
+    this.ensureConnected();
+    const request = this.protocol.buildSetClockRequest(value);
+    const parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    this.ensureSuccessReturnCode(parsed.returnCode, "Set PLC datetime");
+    return 0;
+  }
+
+  /**
+   * Set PLC datetime to current local system time.
+   */
+  public async setPlcSystemDatetime(options: TransportRequestOptions = {}): Promise<number> {
+    return this.setPlcDatetime(new Date(), options);
+  }
+
+  /**
+   * Get CPU state string.
+   */
+  public async getCpuState(options: TransportRequestOptions = {}): Promise<string> {
+    this.ensureConnected();
+    const request = this.protocol.buildCpuStateRequest();
+    const parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    return this.protocol.extractCpuState(parsed);
+  }
+
+  /**
+   * Read one SZL entry by ID/index.
+   *
+   * Supports follow-up USER_DATA fragments and concatenates all payload data.
+   */
+  public async readSzl(szlId: number, index = 0, options: TransportRequestOptions = {}): Promise<S7SZL> {
+    this.ensureConnected();
+
+    const request = this.protocol.buildReadSzlRequest(szlId, index);
+    let parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    this.ensureSuccessReturnCode(parsed.returnCode, "Read SZL");
+
+    const first = this.protocol.parseReadSzlResponse(parsed, true);
+    let accumulated = first.data;
+    let lastDataUnit = parsed.parameters?.lastDataUnit ?? 0x00;
+    let sequenceNumber = parsed.parameters?.sequenceNumber ?? 0x00;
+    const group = parsed.parameters?.group ?? 0x04;
+    const subfunction = parsed.parameters?.subfunction ?? 0x01;
+
+    for (let i = 0; i < 100 && lastDataUnit !== 0x00; i += 1) {
+      const followup = this.protocol.buildUserDataFollowupRequest(group, subfunction, sequenceNumber);
+      parsed = this.protocol.parseResponse(await this.exchange(followup, options));
+      this.ensureSuccessReturnCode(parsed.returnCode, "Read SZL follow-up");
+      const fragment = this.protocol.parseReadSzlResponse(parsed, false);
+      accumulated = this.concatChunks(accumulated, fragment.data);
+      lastDataUnit = parsed.parameters?.lastDataUnit ?? 0x00;
+      sequenceNumber = parsed.parameters?.sequenceNumber ?? sequenceNumber;
+    }
+
+    return {
+      Header: {
+        LengthDR: accumulated.length,
+        NDR: 1
+      },
+      Data: accumulated
+    };
+  }
+
+  /**
+   * Read CPU identification fields (SZL 0x001C).
+   */
+  public async getCpuInfo(options: TransportRequestOptions = {}): Promise<S7CpuInfo> {
+    const szl = await this.readSzl(0x001c, 0, options);
+    const data = szl.Data;
+    return {
+      ModuleTypeName: this.decodeAscii(data.slice(0, 32)),
+      SerialNumber: this.decodeAscii(data.slice(32, 56)),
+      ASName: this.decodeAscii(data.slice(56, 80)),
+      Copyright: this.decodeAscii(data.slice(80, 106)),
+      ModuleName: this.decodeAscii(data.slice(106, 130))
+    };
+  }
+
+  /**
+   * Read CP communication capabilities (SZL 0x0131).
+   */
+  public async getCpInfo(options: TransportRequestOptions = {}): Promise<S7CpInfo> {
+    const szl = await this.readSzl(0x0131, 0, options);
+    const data = szl.Data;
+    return {
+      MaxPduLength: this.readUint16(data, 0),
+      MaxConnections: this.readUint16(data, 2),
+      MaxMpiRate: this.readUint16(data, 4),
+      MaxBusRate: this.readUint16(data, 6)
+    };
+  }
+
+  /**
+   * Read order code and firmware version (SZL 0x0011).
+   */
+  public async getOrderCode(options: TransportRequestOptions = {}): Promise<S7OrderCode> {
+    const szl = await this.readSzl(0x0011, 0, options);
+    const data = szl.Data;
+    return {
+      OrderCode: this.decodeAscii(data.slice(0, 20)),
+      V1: data[20] ?? 0,
+      V2: data[21] ?? 0,
+      V3: data[22] ?? 0
+    };
+  }
+
+  /**
+   * Read protection levels (SZL 0x0232).
+   */
+  public async getProtection(options: TransportRequestOptions = {}): Promise<S7Protection> {
+    const szl = await this.readSzl(0x0232, 0, options);
+    const data = szl.Data;
+    return {
+      sch_schal: this.readUint16(data, 0),
+      sch_par: this.readUint16(data, 2),
+      sch_rel: this.readUint16(data, 4),
+      bart_sch: this.readUint16(data, 6),
+      anl_sch: this.readUint16(data, 8)
+    };
+  }
+
+  /**
    * Decode block header information from raw block bytes.
    *
    * This mirrors python-snap7 ClientMixin.get_pg_block_info behavior.
@@ -496,6 +664,24 @@ export class LegacyS7AsyncClient {
       return new DataView(data.buffer, data.byteOffset + 6, 2).getUint16(0, false);
     }
     return 1;
+  }
+
+  private readUint16(data: Uint8Array, offset: number): number {
+    if (offset + 1 >= data.length) {
+      return 0;
+    }
+    return new DataView(data.buffer, data.byteOffset + offset, 2).getUint16(0, false);
+  }
+
+  private decodeAscii(data: Uint8Array): string {
+    let out = "";
+    for (const byte of data) {
+      if (byte === 0) {
+        continue;
+      }
+      out += String.fromCharCode(byte);
+    }
+    return out.trim();
   }
 
   private async exchange(pdu: Uint8Array, options: TransportRequestOptions): Promise<Uint8Array> {
