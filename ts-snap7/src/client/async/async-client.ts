@@ -33,6 +33,10 @@ export interface LegacyClientLike {
   listBlocksOfType?(blockType: Block, maxCount: number): Promise<number[]>;
   getBlockInfo?(blockType: Block, blockNumber: number): Promise<TS7BlockInfo>;
   getPgBlockInfo?(data: Uint8Array): TS7BlockInfo;
+  upload?(blockNumber: number): Promise<Uint8Array>;
+  fullUpload?(blockType: Block, blockNumber: number): Promise<readonly [Uint8Array, number]>;
+  download?(data: Uint8Array, blockNumber?: number): Promise<number>;
+  delete?(blockType: Block, blockNumber: number): Promise<number>;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
 }
@@ -536,6 +540,50 @@ export class AsyncClient {
     info.CodeDate = "2019/06/27";
     info.IntfDate = "2019/06/27";
     return info;
+  }
+
+  /**
+   * Upload DB block payload from PLC.
+   */
+  public async upload(blockNumber: number): Promise<Uint8Array> {
+    const legacy = this.requireLegacyClientForBlockOps();
+    if (legacy.upload === undefined) {
+      throw new Error("Legacy client does not support upload");
+    }
+    return legacy.upload(blockNumber);
+  }
+
+  /**
+   * Upload complete block image with header/footer wrapper.
+   */
+  public async fullUpload(blockType: Block, blockNumber: number): Promise<readonly [Uint8Array, number]> {
+    const legacy = this.requireLegacyClientForBlockOps();
+    if (legacy.fullUpload === undefined) {
+      throw new Error("Legacy client does not support fullUpload");
+    }
+    return legacy.fullUpload(blockType, blockNumber);
+  }
+
+  /**
+   * Download block bytes to PLC.
+   */
+  public async download(data: Uint8Array, blockNumber = -1): Promise<number> {
+    const legacy = this.requireLegacyClientForBlockOps();
+    if (legacy.download === undefined) {
+      throw new Error("Legacy client does not support download");
+    }
+    return legacy.download(data, blockNumber);
+  }
+
+  /**
+   * Delete one PLC block.
+   */
+  public async delete(blockType: Block, blockNumber: number): Promise<number> {
+    const legacy = this.requireLegacyClientForBlockOps();
+    if (legacy.delete === undefined) {
+      throw new Error("Legacy client does not support delete");
+    }
+    return legacy.delete(blockType, blockNumber);
   }
 
   /**

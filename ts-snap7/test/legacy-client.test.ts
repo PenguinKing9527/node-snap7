@@ -116,6 +116,42 @@ class FakeLegacyTransport implements LegacyTransport {
       return Promise.resolve(wrapCotpDt(buildS7Response(params, data, 2)));
     }
 
+    if (fn === 0x1d) {
+      const params = Uint8Array.of(0x1d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x06, 0x30, 0x30, 0x30, 0x30, 0x31, 0x36);
+      return Promise.resolve(wrapCotpDt(buildS7Response(params, new Uint8Array(0), 7)));
+    }
+
+    if (fn === 0x1e) {
+      const params = Uint8Array.of(0x1e, 0x00);
+      const data = Uint8Array.of(0xff, 0x04, 0x00, 0x20, 0xde, 0xad, 0xbe, 0xef);
+      return Promise.resolve(wrapCotpDt(buildS7Response(params, data, 8)));
+    }
+
+    if (fn === 0x1f) {
+      const params = Uint8Array.of(0x1f, 0x00);
+      return Promise.resolve(wrapCotpDt(buildS7Response(params, Uint8Array.of(0xff), 9)));
+    }
+
+    if (fn === 0x1a) {
+      const params = Uint8Array.of(0x1a, 0x00);
+      return Promise.resolve(wrapCotpDt(buildS7Response(params, Uint8Array.of(0xff), 10)));
+    }
+
+    if (fn === 0x1b) {
+      const params = Uint8Array.of(0x1b, 0x00);
+      return Promise.resolve(wrapCotpDt(buildS7Response(params, Uint8Array.of(0xff), 11)));
+    }
+
+    if (fn === 0x1c) {
+      const params = Uint8Array.of(0x1c, 0x00);
+      return Promise.resolve(wrapCotpDt(buildS7Response(params, Uint8Array.of(0xff), 12)));
+    }
+
+    if (fn === 0x28) {
+      const params = Uint8Array.of(0x28, 0x00);
+      return Promise.resolve(wrapCotpDt(buildS7Response(params, Uint8Array.of(0xff), 13)));
+    }
+
     const writeParams = Uint8Array.of(S7Function.WRITE_AREA, 0x01);
     const writeData = Uint8Array.of(0xff);
     return Promise.resolve(wrapCotpDt(buildS7Response(writeParams, writeData, 3)));
@@ -189,5 +225,22 @@ describe("LegacyS7AsyncClient", () => {
     expect(info.BlkNumber).toBe(10);
     expect(info.MC7Size).toBe(111);
     expect(info.Version).toBe(9);
+  });
+
+  it("supports upload/fullUpload/download/delete flows", async () => {
+    const transport = new FakeLegacyTransport();
+    const client = new LegacyS7AsyncClient(transport);
+    await client.connect({ address: "127.0.0.1", rack: 0, slot: 1 });
+
+    const uploaded = await client.upload(1);
+    expect(Array.from(uploaded)).toEqual([0xde, 0xad, 0xbe, 0xef]);
+
+    const [fullBlock, size] = await client.fullUpload(Block.DB, 1);
+    expect(size).toBe(fullBlock.length);
+    expect(fullBlock[0]).toBe(0x70);
+    expect(fullBlock[1]).toBe(Block.DB);
+
+    await expect(client.download(Uint8Array.of(1, 2, 3, 4), 1)).resolves.toBe(0);
+    await expect(client.delete(Block.DB, 1)).resolves.toBe(0);
   });
 });

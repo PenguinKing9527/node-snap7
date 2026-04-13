@@ -181,4 +181,38 @@ describe("LegacyS7Protocol", () => {
     expect(parsed.version).toBe(5);
     expect(parsed.checksum).toBe(0xabcd);
   });
+
+  it("builds upload/download/delete transfer requests and parses start upload handle", () => {
+    const protocol = new LegacyS7Protocol();
+
+    const start = protocol.buildStartUploadRequest(0x41, 123);
+    expect(start[10]).toBe(0x1d);
+
+    const upload = protocol.buildUploadRequest(0x01020304);
+    expect(upload[10]).toBe(0x1e);
+
+    const endUpload = protocol.buildEndUploadRequest(0x01020304);
+    expect(endUpload[10]).toBe(0x1f);
+
+    const download = protocol.buildDownloadRequest(0x41, 123, Uint8Array.of(1, 2, 3));
+    expect(download[10]).toBe(0x1a);
+
+    const downloadBlock = protocol.buildDownloadBlockRequest(Uint8Array.of(1, 2, 3, 4));
+    expect(downloadBlock[10]).toBe(0x1b);
+
+    const downloadEnd = protocol.buildDownloadEndedRequest();
+    expect(downloadEnd[10]).toBe(0x1c);
+
+    const del = protocol.buildDeleteBlockRequest(0x41, 123);
+    expect(del[10]).toBe(0x28);
+
+    const startRes = protocol.parseStartUploadResponse({
+      sequence: 1,
+      parameterLength: 0,
+      dataLength: 0,
+      rawParameters: Uint8Array.of(0x1d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x06, 0x30, 0x30, 0x30, 0x31, 0x32, 0x38)
+    });
+    expect(startRes.uploadId).toBe(1);
+    expect(startRes.blockLength).toBe(128);
+  });
 });

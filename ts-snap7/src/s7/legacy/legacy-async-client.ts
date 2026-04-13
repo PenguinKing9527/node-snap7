@@ -312,6 +312,105 @@ export class LegacyS7AsyncClient {
   }
 
   /**
+   * Upload DB block payload (MC7 body) from PLC.
+   *
+   * Mirrors python-snap7 3-step sequence:
+   * 1) START_UPLOAD
+   * 2) UPLOAD
+   * 3) END_UPLOAD
+   */
+  public async upload(blockNumber: number, options: TransportRequestOptions = {}): Promise<Uint8Array> {
+    this.ensureConnected();
+
+    const startReq = this.protocol.buildStartUploadRequest(Block.DB, blockNumber);
+    const startRes = this.protocol.parseResponse(await this.exchange(startReq, options));
+    const uploadInfo = this.protocol.parseStartUploadResponse(startRes);
+    const uploadId = uploadInfo.uploadId || 1;
+
+    const uploadReq = this.protocol.buildUploadRequest(uploadId);
+    const uploadRes = this.protocol.parseResponse(await this.exchange(uploadReq, options));
+    const blockData = this.protocol.parseUploadResponse(uploadRes);
+
+    const endReq = this.protocol.buildEndUploadRequest(uploadId);
+    this.protocol.parseResponse(await this.exchange(endReq, options));
+
+    return blockData;
+  }
+
+  /**
+   * Upload a full block image including synthetic header/footer bytes.
+   */
+  public async fullUpload(
+    blockType: Block,
+    blockNumber: number,
+    options: TransportRequestOptions = {}
+  ): Promise<readonly [Uint8Array, number]> {
+    this.ensureConnected();
+
+    const startReq = this.protocol.buildStartUploadRequest(this.toLegacyBlockTypeCode(blockType), blockNumber);
+    const startRes = this.protocol.parseResponse(await this.exchange(startReq, options));
+    const uploadInfo = this.protocol.parseStartUploadResponse(startRes);
+    const uploadId = uploadInfo.uploadId || 1;
+
+    const uploadReq = this.protocol.buildUploadRequest(uploadId);
+    const uploadRes = this.protocol.parseResponse(await this.exchange(uploadReq, options));
+    const blockData = this.protocol.parseUploadResponse(uploadRes);
+
+    const endReq = this.protocol.buildEndUploadRequest(uploadId);
+    this.protocol.parseResponse(await this.exchange(endReq, options));
+
+    const header = new Uint8Array(12);
+    const h = new DataView(header.buffer);
+    header[0] = 0x70;
+    header[1] = blockType & 0xff;
+    h.setUint16(2, blockNumber, false);
+    header[4] = 0x00;
+    header[5] = 0x00;
+    header[6] = 0x00;
+    header[7] = 0x00;
+    h.setUint16(8, blockData.length + 14, false);
+    h.setUint16(10, blockData.length, false);
+
+    const footer = new Uint8Array(4);
+    const full = new Uint8Array(header.length + blockData.length + footer.length);
+    full.set(header, 0);
+    full.set(blockData, header.length);
+    full.set(footer, header.length + blockData.length);
+    return [full, full.length] as const;
+  }
+
+  /**
+   * Download block bytes into PLC.
+   */
+  public async download(data: Uint8Array, blockNumber = -1, options: TransportRequestOptions = {}): Promise<number> {
+    this.ensureConnected();
+
+    const targetBlock = this.resolveDownloadBlockNumber(data, blockNumber);
+
+    const requestDownload = this.protocol.buildDownloadRequest(Block.DB, targetBlock, data);
+    this.protocol.parseResponse(await this.exchange(requestDownload, options));
+
+    const downloadBlock = this.protocol.buildDownloadBlockRequest(data);
+    this.protocol.parseResponse(await this.exchange(downloadBlock, options));
+
+    const ended = this.protocol.buildDownloadEndedRequest();
+    this.protocol.parseResponse(await this.exchange(ended, options));
+
+    return 0;
+  }
+
+  /**
+   * Delete one block from PLC.
+   */
+  public async delete(blockType: Block, blockNumber: number, options: TransportRequestOptions = {}): Promise<number> {
+    this.ensureConnected();
+    const request = this.protocol.buildDeleteBlockRequest(this.toLegacyBlockTypeCode(blockType), blockNumber);
+    const parsed = this.protocol.parseResponse(await this.exchange(request, options));
+    this.protocol.checkControlResponse(parsed);
+    return 0;
+  }
+
+  /**
    * Decode block header information from raw block bytes.
    *
    * This mirrors python-snap7 ClientMixin.get_pg_block_info behavior.
@@ -387,6 +486,16 @@ export class LegacyS7AsyncClient {
     out.set(first, 0);
     out.set(second, first.length);
     return out;
+  }
+
+  private resolveDownloadBlockNumber(data: Uint8Array, requested: number): number {
+    if (requested >= 0) {
+      return requested;
+    }
+    if (data.length >= 8) {
+      return new DataView(data.buffer, data.byteOffset + 6, 2).getUint16(0, false);
+    }
+    return 1;
   }
 
   private async exchange(pdu: Uint8Array, options: TransportRequestOptions): Promise<Uint8Array> {

@@ -17,6 +17,14 @@ export enum S7PduType {
 export enum S7Function {
   READ_AREA = 0x04,
   WRITE_AREA = 0x05,
+  REQUEST_DOWNLOAD = 0x1a,
+  DOWNLOAD_BLOCK = 0x1b,
+  DOWNLOAD_ENDED = 0x1c,
+  START_UPLOAD = 0x1d,
+  UPLOAD = 0x1e,
+  END_UPLOAD = 0x1f,
+  PLC_CONTROL = 0x28,
+  PLC_STOP = 0x29,
   SETUP_COMMUNICATION = 0xf0
 }
 
@@ -73,6 +81,7 @@ export interface LegacyS7Response {
   functionCode?: number;
   returnCode?: number;
   transportSize?: number;
+  rawParameters?: Uint8Array;
   data?: Uint8Array;
   parameters?: {
     pduLength?: number;
@@ -360,6 +369,156 @@ export class LegacyS7Protocol {
   }
 
   /**
+   * Builds START_UPLOAD request.
+   */
+  public buildStartUploadRequest(blockType: number, blockNumber: number): Uint8Array {
+    const blockAddrAscii = `${blockType.toString(16).toUpperCase().padStart(2, "0")}${String(blockNumber).padStart(5, "0")}A`;
+    const addr = this.asciiBytes(blockAddrAscii);
+    const params = new Uint8Array(9 + addr.length);
+    const view = new DataView(params.buffer);
+    view.setUint8(0, S7Function.START_UPLOAD);
+    view.setUint8(1, 0x00);
+    view.setUint8(2, 0x00);
+    view.setUint32(3, 0x00000000, false);
+    view.setUint8(7, addr.length);
+    params.set(addr, 8);
+    return this.buildRequestPdu(params, new Uint8Array(0));
+  }
+
+  /**
+   * Builds UPLOAD request.
+   */
+  public buildUploadRequest(uploadId: number): Uint8Array {
+    const params = new Uint8Array(7);
+    const view = new DataView(params.buffer);
+    view.setUint8(0, S7Function.UPLOAD);
+    view.setUint8(1, 0x00);
+    view.setUint8(2, 0x00);
+    view.setUint32(3, uploadId >>> 0, false);
+    return this.buildRequestPdu(params, new Uint8Array(0));
+  }
+
+  /**
+   * Builds END_UPLOAD request.
+   */
+  public buildEndUploadRequest(uploadId: number): Uint8Array {
+    const params = new Uint8Array(7);
+    const view = new DataView(params.buffer);
+    view.setUint8(0, S7Function.END_UPLOAD);
+    view.setUint8(1, 0x00);
+    view.setUint8(2, 0x00);
+    view.setUint32(3, uploadId >>> 0, false);
+    return this.buildRequestPdu(params, new Uint8Array(0));
+  }
+
+  /**
+   * Builds REQUEST_DOWNLOAD request.
+   */
+  public buildDownloadRequest(blockType: number, blockNumber: number, blockData: Uint8Array): Uint8Array {
+    const blockAddrAscii = `${blockType.toString(16).toUpperCase().padStart(2, "0")}${String(blockNumber).padStart(5, "0")}P`;
+    const blockAddr = this.asciiBytes(blockAddrAscii);
+    const lengthAscii = this.asciiBytes(String(blockData.length).padStart(6, "0"));
+    const params = new Uint8Array(6 + blockAddr.length + 1 + lengthAscii.length);
+    let offset = 0;
+    params[offset++] = S7Function.REQUEST_DOWNLOAD;
+    params[offset++] = 0x00;
+    params[offset++] = 0x00;
+    params[offset++] = 0x00;
+    params[offset++] = blockAddr.length;
+    params.set(blockAddr, offset);
+    offset += blockAddr.length;
+    params[offset++] = lengthAscii.length;
+    params.set(lengthAscii, offset);
+    return this.buildRequestPdu(params, new Uint8Array(0));
+  }
+
+  /**
+   * Builds DOWNLOAD_BLOCK request (data-transfer phase).
+   */
+  public buildDownloadBlockRequest(blockData: Uint8Array): Uint8Array {
+    const params = Uint8Array.of(S7Function.DOWNLOAD_BLOCK, 0x01, 0x00);
+    const dataSection = new Uint8Array(4 + blockData.length);
+    const view = new DataView(dataSection.buffer);
+    view.setUint16(0, blockData.length, false);
+    view.setUint16(2, 0x00fb, false);
+    dataSection.set(blockData, 4);
+    return this.buildRequestPdu(params, dataSection);
+  }
+
+  /**
+   * Builds DOWNLOAD_ENDED request.
+   */
+  public buildDownloadEndedRequest(): Uint8Array {
+    return this.buildRequestPdu(Uint8Array.of(S7Function.DOWNLOAD_ENDED), new Uint8Array(0));
+  }
+
+  /**
+   * Builds PLC_CONTROL request for block deletion.
+   */
+  public buildDeleteBlockRequest(blockType: number, blockNumber: number): Uint8Array {
+    const piService = this.asciiBytes("_DELE");
+    const blockSpec = this.asciiBytes(
+      `${blockType.toString(16).toUpperCase().padStart(2, "0")}${String(blockNumber).padStart(5, "0")}P`
+    );
+    const params = new Uint8Array(9 + blockSpec.length + piService.length);
+    let offset = 0;
+    params[offset++] = S7Function.PLC_CONTROL;
+    params[offset++] = 0x00;
+    params[offset++] = 0x00;
+    params[offset++] = 0x00;
+    params[offset++] = 0x00;
+    params[offset++] = 0x00;
+    params[offset++] = blockSpec.length;
+    params[offset++] = piService.length;
+    params[offset++] = 0x00;
+    params.set(blockSpec, offset);
+    offset += blockSpec.length;
+    params.set(piService, offset);
+    return this.buildRequestPdu(params, new Uint8Array(0));
+  }
+
+  /**
+   * Parse START_UPLOAD response to extract upload handle and optional block length.
+   */
+  public parseStartUploadResponse(response: LegacyS7Response): { uploadId: number; blockLength: number } {
+    const out = { uploadId: 0, blockLength: 0 };
+    const raw = response.rawParameters ?? new Uint8Array(0);
+    if (raw.length < 8) {
+      return out;
+    }
+    out.uploadId = new DataView(raw.buffer, raw.byteOffset + 3, 4).getUint32(0, false);
+    if (raw.length > 8) {
+      const lenField = raw[7] ?? 0;
+      if (raw.length >= 8 + lenField) {
+        const ascii = this.bytesToAscii(raw.slice(8, 8 + lenField));
+        const parsed = Number.parseInt(ascii, 10);
+        if (Number.isFinite(parsed)) {
+          out.blockLength = parsed;
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Parse UPLOAD response payload bytes.
+   */
+  public parseUploadResponse(response: LegacyS7Response): Uint8Array {
+    return response.data ?? new Uint8Array(0);
+  }
+
+  /**
+   * Validate control-style ACK response (e.g. delete block).
+   */
+  public checkControlResponse(response: LegacyS7Response): void {
+    // For these flows, parser-level protocol errors are already thrown.
+    // Return-code in data section, if present, should still indicate success.
+    if (response.returnCode !== undefined && response.returnCode !== 0xff) {
+      throw new Error(`Control request failed with return code 0x${response.returnCode.toString(16).padStart(2, "0")}`);
+    }
+  }
+
+  /**
    * Parses ACK/ACK_DATA/USER_DATA responses.
    */
   public parseResponse(pdu: Uint8Array): LegacyS7Response {
@@ -399,6 +558,7 @@ export class LegacyS7Protocol {
 
     if (parameterLength > 0) {
       const params = pdu.slice(offset, offset + parameterLength);
+      response.rawParameters = params;
       const functionCode = params[0];
       if (functionCode !== undefined) {
         response.functionCode = functionCode;
@@ -481,6 +641,30 @@ export class LegacyS7Protocol {
     new DataView(dataSection.buffer).setUint16(2, payload.length, false);
     dataSection.set(payload, 4);
     return this.buildUserDataPdu(params, dataSection);
+  }
+
+  private buildRequestPdu(parameters: Uint8Array, dataSection: Uint8Array): Uint8Array {
+    const header = new Uint8Array(10);
+    const view = new DataView(header.buffer);
+    view.setUint8(0, 0x32);
+    view.setUint8(1, S7PduType.REQUEST);
+    view.setUint16(2, 0x0000, false);
+    view.setUint16(4, this.nextSequence(), false);
+    view.setUint16(6, parameters.length, false);
+    view.setUint16(8, dataSection.length, false);
+    const out = new Uint8Array(header.length + parameters.length + dataSection.length);
+    out.set(header, 0);
+    out.set(parameters, header.length);
+    out.set(dataSection, header.length + parameters.length);
+    return out;
+  }
+
+  private asciiBytes(value: string): Uint8Array {
+    const out = new Uint8Array(value.length);
+    for (let i = 0; i < value.length; i += 1) {
+      out[i] = value.charCodeAt(i) & 0xff;
+    }
+    return out;
   }
 
   private buildUserDataPdu(params: Uint8Array, dataSection: Uint8Array): Uint8Array {
