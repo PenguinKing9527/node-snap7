@@ -109,9 +109,13 @@ export type { LegacyS7Response, LegacyTransport } from "./s7/legacy/index.js";
 export {
   S7CommPlusAsyncClient,
   S7CommPlusConnection,
+  buildLegitimationPayload,
+  buildLegacyResponse,
+  buildNewResponse,
   buildCreateSessionPayload,
   buildReadPayload,
   buildWritePayload,
+  deriveLegitimationKey,
   parseReadResponse,
   parseWriteResponse,
   s7CommPlusStatus

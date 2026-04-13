@@ -55,7 +55,19 @@ export enum FunctionCode {
   CREATE_OBJECT = 0x04ca,
   SET_MULTI_VARIABLES = 0x0542,
   GET_MULTI_VARIABLES = 0x054c,
+  SET_VARIABLE = 0x04f2,
+  GET_VAR_SUBSTREAMED = 0x0586,
+  EXPLORE = 0x04bb,
   INIT_SSL = 0x05b3
+}
+
+/**
+ * S7CommPlus legitimation object identifiers.
+ */
+export enum LegitimationId {
+  SERVER_SESSION_REQUEST = 303,
+  SERVER_SESSION_RESPONSE = 304,
+  LEGITIMATE = 1846
 }
 
 /**

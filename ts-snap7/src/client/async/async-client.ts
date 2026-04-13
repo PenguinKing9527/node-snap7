@@ -82,6 +82,7 @@ export interface S7CommPlusClientLike {
     tlsCa?: string;
   }): Promise<void>;
   disconnect(): void;
+  authenticate?(password: string, username?: string): Promise<void>;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
   dbReadMulti(items: Array<readonly [number, number, number]>): Promise<Uint8Array[]>;
@@ -429,6 +430,25 @@ export class AsyncClient {
       this.recordFailure(startMs, this.classifyErrorCode(error));
       throw error;
     }
+  }
+
+  /**
+   * Perform S7CommPlus password legitimation.
+   *
+   * This operation is only available when connected with `s7commplus`
+   * protocol and TLS enabled.
+   */
+  public async authenticate(password: string, username = ""): Promise<void> {
+    return this.executeReliably("authenticate", false, async () => {
+      if (this.activeProtocol !== "s7commplus") {
+        throw new Error("authenticate requires s7commplus protocol connection");
+      }
+      const plus = this.requireS7CommPlusClient();
+      if (plus.authenticate === undefined) {
+        throw new Error("S7CommPlus client does not support authenticate");
+      }
+      await plus.authenticate(password, username);
+    });
   }
 
   /**

@@ -20,8 +20,8 @@ class FakeConnection implements S7CommPlusConnectionLike {
   public sessionSetupOk = false;
   public sessionId = 0;
   public protocolVersion = 1;
-  public tlsActive = false;
-  public omsSecret: Uint8Array | null = null;
+  public tlsActive = true;
+  public omsSecret: Uint8Array | null = Uint8Array.from({ length: 32 }, (_, i) => (i + 1) & 0xff);
   public sentFunctions: number[] = [];
 
   public connect(_options: {
@@ -60,6 +60,19 @@ class FakeConnection implements S7CommPlusConnectionLike {
       )
       );
     }
+    if (functionCode === (FunctionCode.GET_VAR_SUBSTREAMED as number)) {
+      return Promise.resolve(
+        concat(
+          encodeUint64Vlq(0n),
+          Uint8Array.of(0x00, DataType.BLOB),
+          encodeUint32Vlq(16),
+          Uint8Array.from({ length: 16 }, (_, i) => i + 1)
+        )
+      );
+    }
+    if (functionCode === (FunctionCode.SET_VARIABLE as number)) {
+      return Promise.resolve(encodeUint64Vlq(0n));
+    }
     return Promise.resolve(concat(encodeUint64Vlq(0n), encodeUint32Vlq(0)));
   }
 }
@@ -84,5 +97,26 @@ describe("S7CommPlusAsyncClient", () => {
     ]);
     expect(Array.from(multi[0]!)).toEqual([1, 2, 3]);
     expect(Array.from(multi[1]!)).toEqual([0x2a]);
+  });
+
+  it("performs authenticate legitimation flow when TLS is active", async () => {
+    const connection = new FakeConnection();
+    const client = new S7CommPlusAsyncClient(connection);
+
+    await client.connect({ host: "127.0.0.1", useTls: true });
+    await expect(client.authenticate("plc-password")).resolves.toBeUndefined();
+
+    expect(connection.sentFunctions).toContain(FunctionCode.GET_VAR_SUBSTREAMED);
+    expect(connection.sentFunctions.filter((fn) => fn === FunctionCode.SET_VARIABLE).length).toBeGreaterThan(0);
+  });
+
+  it("rejects authenticate without TLS exporter secret", async () => {
+    const connection = new FakeConnection();
+    connection.tlsActive = false;
+    connection.omsSecret = null;
+    const client = new S7CommPlusAsyncClient(connection);
+
+    await client.connect({ host: "127.0.0.1" });
+    await expect(client.authenticate("plc-password")).rejects.toThrow(/requires TLS/i);
   });
 });

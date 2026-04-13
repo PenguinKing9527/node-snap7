@@ -48,6 +48,7 @@ class FakeS7CommPlusClient implements S7CommPlusClientLike {
   public readCalls: Array<{ dbNumber: number; start: number; size: number }> = [];
   public writeCalls: Array<{ dbNumber: number; start: number; data: Uint8Array }> = [];
   public readMultiCalls: Array<Array<readonly [number, number, number]>> = [];
+  public authenticateCalls: Array<{ password: string; username: string }> = [];
 
   public connect(_options: {
     host: string;
@@ -80,6 +81,11 @@ class FakeS7CommPlusClient implements S7CommPlusClientLike {
   public dbReadMulti(items: Array<readonly [number, number, number]>): Promise<Uint8Array[]> {
     this.readMultiCalls.push(items);
     return Promise.resolve(items.map((item) => Uint8Array.of(item[0] & 0xff, item[1] & 0xff, item[2] & 0xff)));
+  }
+
+  public authenticate(password: string, username = ""): Promise<void> {
+    this.authenticateCalls.push({ password, username });
+    return Promise.resolve();
   }
 }
 
@@ -236,5 +242,16 @@ describe("AsyncClient (Task 6 unified routing)", () => {
       tlsKey: "client.key",
       tlsCa: "ca.crt"
     });
+  });
+
+  it("delegates authenticate to s7commplus client in plus mode", async () => {
+    const plus = new FakeS7CommPlusClient();
+    const client = new AsyncClient({
+      createLegacyClient: () => new FakeLegacyClient(),
+      createS7CommPlusClient: () => plus
+    });
+    await client.connect({ address: "127.0.0.1", protocol: "s7commplus" });
+    await client.authenticate("plc-pass", "operator");
+    expect(plus.authenticateCalls).toEqual([{ password: "plc-pass", username: "operator" }]);
   });
 });

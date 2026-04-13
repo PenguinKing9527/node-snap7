@@ -20,6 +20,7 @@ export {
   ElementID,
   FunctionCode,
   Ids,
+  LegitimationId,
   ObjectId,
   Opcode,
   PROTOCOL_ID,

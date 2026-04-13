@@ -16,6 +16,7 @@ export const s7CommPlusStatus: S7CommPlusStatus = {
 
 export { S7CommPlusConnection } from "./connection.js";
 export { S7CommPlusAsyncClient } from "./s7commplus-async-client.js";
+export { buildLegitimationPayload, buildLegacyResponse, buildNewResponse, deriveLegitimationKey } from "./legitimation.js";
 export { buildCreateSessionPayload, buildReadPayload, buildWritePayload, parseReadResponse, parseWriteResponse } from "./payload.js";
 export type { PlusTransport } from "./connection.js";
 export type { S7CommPlusConnectionLike } from "./s7commplus-async-client.js";

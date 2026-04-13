@@ -1,6 +1,7 @@
-import { FunctionCode } from "../../core/index.js";
+import { DataType, FunctionCode, LegitimationId, decodeUint32Vlq, decodeUint64Vlq, encodeUint32, encodeUint32Vlq } from "../../core/index.js";
 import { Snap7ConnectionError } from "../../errors/index.js";
 import { S7CommPlusConnection } from "./connection.js";
+import { buildLegacyResponse, buildNewResponse } from "./legitimation.js";
 import { buildReadPayload, buildWritePayload, parseReadResponse, parseWriteResponse } from "./payload.js";
 
 export interface S7CommPlusConnectionLike {
@@ -105,9 +106,121 @@ export class S7CommPlusAsyncClient {
     return parsed.map((item) => item ?? new Uint8Array(0));
   }
 
+  /**
+   * Perform PLC password authentication (legitimation).
+   *
+   * Requirements:
+   * - active S7CommPlus connection
+   * - TLS active with available OMS exporter secret
+   */
+  public async authenticate(password: string, username = ""): Promise<void> {
+    this.ensureConnected();
+    if (!this.tlsActive || this.omsSecret === null) {
+      throw new Snap7ConnectionError("Legitimation requires TLS. Connect with useTls/use_tls enabled.");
+    }
+
+    const challenge = await this.getLegitimationChallenge();
+    if (username.length > 0) {
+      await this.sendLegitimationNew(buildNewResponse(password, challenge, this.omsSecret, username));
+      return;
+    }
+
+    try {
+      await this.sendLegitimationNew(buildNewResponse(password, challenge, this.omsSecret, ""));
+    } catch (newStyleError) {
+      void newStyleError;
+      await this.sendLegitimationLegacy(buildLegacyResponse(password, challenge));
+    }
+  }
+
   private ensureConnected(): void {
     if (!this.connected) {
       throw new Snap7ConnectionError("S7CommPlus client is not connected");
     }
   }
+
+  private async getLegitimationChallenge(): Promise<Uint8Array> {
+    const payload = concat(
+      encodeUint32(this.sessionId),
+      encodeUint32Vlq(1),
+      encodeUint32Vlq(1),
+      encodeUint32Vlq(LegitimationId.SERVER_SESSION_REQUEST),
+      encodeUint32(0)
+    );
+    const response = await this.connection.sendRequest(FunctionCode.GET_VAR_SUBSTREAMED, payload);
+
+    let offset = 0;
+    const [returnValue, consumed] = decodeUint64Vlq(response, offset);
+    offset += consumed;
+    if (returnValue !== 0n) {
+      throw new Snap7ConnectionError(`GetVarSubStreamed for challenge failed: return_value=${returnValue.toString()}`);
+    }
+
+    if (offset + 2 > response.length) {
+      throw new Snap7ConnectionError("Challenge response too short");
+    }
+    // flags byte is currently not used but retained for wire compatibility parsing.
+    offset += 1;
+    const datatype = response[offset] ?? 0;
+    offset += 1;
+
+    const [length, used] = decodeUint32Vlq(response, offset);
+    offset += used;
+    if (offset + length > response.length) {
+      throw new Snap7ConnectionError("Challenge response length exceeds payload");
+    }
+    if (datatype !== DataType.BLOB && datatype !== DataType.USINT) {
+      throw new Snap7ConnectionError(`Unexpected challenge datatype: 0x${datatype.toString(16).padStart(2, "0")}`);
+    }
+    return response.slice(offset, offset + length);
+  }
+
+  private async sendLegitimationNew(encryptedResponse: Uint8Array): Promise<void> {
+    const payload = concat(
+      encodeUint32(this.sessionId),
+      encodeUint32Vlq(1),
+      encodeUint32Vlq(LegitimationId.LEGITIMATE),
+      Uint8Array.of(0x00, DataType.BLOB),
+      encodeUint32Vlq(encryptedResponse.length),
+      encryptedResponse,
+      encodeUint32(0)
+    );
+    const response = await this.connection.sendRequest(FunctionCode.SET_VARIABLE, payload);
+    if (response.length > 0) {
+      const [returnValue] = decodeUint64Vlq(response, 0);
+      if (returnValue < 0n) {
+        throw new Snap7ConnectionError(`Legitimation rejected by PLC: return_value=${returnValue.toString()}`);
+      }
+    }
+  }
+
+  private async sendLegitimationLegacy(legacyResponse: Uint8Array): Promise<void> {
+    const payload = concat(
+      encodeUint32(this.sessionId),
+      encodeUint32Vlq(1),
+      encodeUint32Vlq(LegitimationId.SERVER_SESSION_RESPONSE),
+      Uint8Array.of(0x10, DataType.USINT),
+      encodeUint32Vlq(legacyResponse.length),
+      legacyResponse,
+      encodeUint32(0)
+    );
+    const response = await this.connection.sendRequest(FunctionCode.SET_VARIABLE, payload);
+    if (response.length > 0) {
+      const [returnValue] = decodeUint64Vlq(response, 0);
+      if (returnValue < 0n) {
+        throw new Snap7ConnectionError(`Legacy legitimation rejected by PLC: return_value=${returnValue.toString()}`);
+      }
+    }
+  }
 }
+
+const concat = (...parts: Uint8Array[]): Uint8Array => {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};
