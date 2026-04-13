@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { LegacyS7Protocol, S7Area, S7BlockSubfunction, S7Function, S7PduType, S7WordLen } from "../src/s7/legacy/index.js";
+import {
+  getReturnCodeDescription,
+  LegacyS7Protocol,
+  S7Area,
+  S7BlockSubfunction,
+  S7Function,
+  S7PduType,
+  S7WordLen
+} from "../src/s7/legacy/index.js";
 
 const buildResponse = (params: Uint8Array, data: Uint8Array, sequence = 1): Uint8Array => {
   const out = new Uint8Array(12 + params.length + data.length);
@@ -94,7 +102,7 @@ describe("LegacyS7Protocol", () => {
     const data = Uint8Array.of(0x05, 0x04, 0x00, 0x08, 0x00);
     const response = buildResponse(params, data, 4);
     const parsed = protocol.parseResponse(response);
-    expect(() => protocol.extractReadBytes(parsed)).toThrow(/Read failed/i);
+    expect(() => protocol.extractReadBytes(parsed)).toThrow(/Invalid address/i);
   });
 
   it("rejects write payload that is not aligned to requested word length", () => {
@@ -256,5 +264,11 @@ describe("LegacyS7Protocol", () => {
     });
     expect(parsedSzl.szlId).toBe(0x001c);
     expect(Array.from(parsedSzl.data)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("maps S7 return codes to readable descriptions", () => {
+    expect(getReturnCodeDescription(0xff)).toBe("Success");
+    expect(getReturnCodeDescription(0x05)).toBe("Invalid address");
+    expect(getReturnCodeDescription(0x9999)).toBe("Unknown error");
   });
 });

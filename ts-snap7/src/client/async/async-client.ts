@@ -62,6 +62,7 @@ export interface LegacyClientLike {
   getCpInfo?(): Promise<S7CpInfo>;
   getOrderCode?(): Promise<S7OrderCode>;
   getProtection?(): Promise<S7Protection>;
+  isoExchangeBuffer?(data: Uint8Array): Promise<Uint8Array>;
   dbRead(dbNumber: number, start: number, size: number): Promise<Uint8Array>;
   dbWrite(dbNumber: number, start: number, data: Uint8Array): Promise<void>;
 }
@@ -741,6 +742,17 @@ export class AsyncClient {
       throw new Error("Legacy client does not support getProtection");
     }
     return legacy.getProtection();
+  }
+
+  /**
+   * Exchange raw ISO payload bytes with legacy transport.
+   */
+  public async isoExchangeBuffer(data: Uint8Array): Promise<Uint8Array> {
+    const legacy = this.requireLegacyClientForServiceOps("ISO exchange");
+    if (legacy.isoExchangeBuffer === undefined) {
+      throw new Error("Legacy client does not support isoExchangeBuffer");
+    }
+    return legacy.isoExchangeBuffer(data);
   }
 
   /**

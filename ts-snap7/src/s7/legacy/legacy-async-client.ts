@@ -2,7 +2,7 @@ import { Snap7ConnectionError, Snap7ProtocolError } from "../../errors/index.js"
 import { Block, type BlocksList, type S7CpInfo, type S7CpuInfo, type S7OrderCode, type S7Protection, type S7SZL, type TS7BlockInfo } from "../../types.js";
 import { AsyncIsoTransport } from "../../transport/index.js";
 import type { TransportConnectOptions, TransportRequestOptions } from "../../transport/types.js";
-import { LegacyS7Protocol, S7Area, S7WordLen } from "./protocol.js";
+import { getReturnCodeDescription, LegacyS7Protocol, S7Area, S7WordLen } from "./protocol.js";
 
 const LOCAL_TSAP = 0x0100;
 
@@ -579,6 +579,17 @@ export class LegacyS7AsyncClient {
   }
 
   /**
+   * Exchange raw ISO payload without applying S7/COTP wrapping logic.
+   *
+   * This mirrors python-snap7 `iso_exchange_buffer`, useful for compatibility
+   * probes and edge-case diagnostics.
+   */
+  public async isoExchangeBuffer(data: Uint8Array, options: TransportRequestOptions = {}): Promise<Uint8Array> {
+    this.ensureConnected();
+    return this.transport.request(data, options);
+  }
+
+  /**
    * Decode block header information from raw block bytes.
    *
    * This mirrors python-snap7 ClientMixin.get_pg_block_info behavior.
@@ -630,7 +641,8 @@ export class LegacyS7AsyncClient {
   private ensureSuccessReturnCode(returnCode: number | undefined, operation: string): void {
     if (returnCode !== 0xff) {
       const code = (returnCode ?? 0).toString(16).padStart(2, "0");
-      throw new Snap7ProtocolError(`${operation} failed with return code 0x${code}`);
+      const description = getReturnCodeDescription(returnCode ?? 0);
+      throw new Snap7ProtocolError(`${operation} failed: ${description} (0x${code})`);
     }
   }
 

@@ -103,6 +103,10 @@ class FakeLegacySystemClient implements LegacyClientLike {
     });
   }
 
+  public isoExchangeBuffer(data: Uint8Array): Promise<Uint8Array> {
+    return Promise.resolve(data);
+  }
+
   public delete(): Promise<number> {
     return Promise.resolve(0);
   }
@@ -210,6 +214,7 @@ describe("AsyncClient system/control APIs", () => {
     await expect(client.getCpInfo()).resolves.toMatchObject({ MaxPduLength: 960 });
     await expect(client.getOrderCode()).resolves.toMatchObject({ OrderCode: "6ES7 151-1" });
     await expect(client.getProtection()).resolves.toMatchObject({ sch_schal: 1 });
+    await expect(client.isoExchangeBuffer(Uint8Array.of(1, 2, 3))).resolves.toEqual(Uint8Array.of(1, 2, 3));
   });
 
   it("rejects control/info APIs in s7commplus mode", async () => {
@@ -223,5 +228,6 @@ describe("AsyncClient system/control APIs", () => {
     await expect(client.getPlcDatetime()).rejects.toThrow(/legacy protocol/i);
     await expect(client.readSzl(0x001c, 0)).rejects.toThrow(/legacy protocol/i);
     await expect(client.getCpuInfo()).rejects.toThrow(/legacy protocol/i);
+    await expect(client.isoExchangeBuffer(Uint8Array.of(1))).rejects.toThrow(/legacy protocol/i);
   });
 });

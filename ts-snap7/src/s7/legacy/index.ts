@@ -15,6 +15,15 @@ export const legacyS7Status: LegacyS7Status = {
 };
 
 export { LegacyS7AsyncClient } from "./legacy-async-client.js";
-export { LegacyS7Protocol, S7Area, S7BlockSubfunction, S7Function, S7PduType, S7WordLen } from "./protocol.js";
+export {
+  getReturnCodeDescription,
+  LegacyS7Protocol,
+  S7Area,
+  S7BlockSubfunction,
+  S7Function,
+  S7PduType,
+  S7WordLen,
+  S7_RETURN_CODES
+} from "./protocol.js";
 export type { LegacyS7Response, ParsedGetBlockInfo, ParsedReadSzl } from "./protocol.js";
 export type { LegacyTransport } from "./legacy-async-client.js";

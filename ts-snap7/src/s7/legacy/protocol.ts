@@ -56,6 +56,40 @@ export enum S7BlockSubfunction {
   BLOCK_INFO = 0x03
 }
 
+/**
+ * S7 data return-code descriptions aligned with python-snap7.
+ */
+export const S7_RETURN_CODES: Readonly<Record<number, string>> = Object.freeze({
+  0x00: "Reserved",
+  0x01: "Hardware error",
+  0x03: "Accessing the object not allowed",
+  0x05: "Invalid address",
+  0x06: "Data type not supported",
+  0x07: "Data type inconsistent",
+  0x0a: "Object does not exist",
+  0x10: "Invalid block type number",
+  0x11: "Block not found in storage medium",
+  0x12: "Block already exists",
+  0x13: "Block is protected",
+  0x14: "Block download without proper block first",
+  0x19: "Block download sequence error",
+  0x1a: "Insufficient working memory",
+  0x1b: "Insufficient load memory",
+  0x1c: "Not enough work retentive data (instance DBs)",
+  0x1d: "Interface error",
+  0x1e: "Delete block refused",
+  0x20: "Invalid parameter",
+  0x21: "PG resource error (max connections reached)",
+  0xff: "Success"
+});
+
+/**
+ * Get human-readable description for S7 return code.
+ */
+export const getReturnCodeDescription = (returnCode: number): string => {
+  return S7_RETURN_CODES[returnCode] ?? "Unknown error";
+};
+
 export interface ParsedGetBlockInfo {
   block_type: number;
   block_number: number;
@@ -646,7 +680,9 @@ export class LegacyS7Protocol {
     // For these flows, parser-level protocol errors are already thrown.
     // Return-code in data section, if present, should still indicate success.
     if (response.returnCode !== undefined && response.returnCode !== 0xff) {
-      throw new Error(`Control request failed with return code 0x${response.returnCode.toString(16).padStart(2, "0")}`);
+      const code = response.returnCode.toString(16).padStart(2, "0");
+      const description = getReturnCodeDescription(response.returnCode);
+      throw new Error(`Control request failed: ${description} (0x${code})`);
     }
   }
 
@@ -740,7 +776,9 @@ export class LegacyS7Protocol {
    */
   public extractReadBytes(response: LegacyS7Response): Uint8Array {
     if (response.returnCode !== 0xff) {
-      throw new Error(`Read failed with return code 0x${(response.returnCode ?? 0).toString(16).padStart(2, "0")}`);
+      const code = (response.returnCode ?? 0).toString(16).padStart(2, "0");
+      const description = getReturnCodeDescription(response.returnCode ?? 0);
+      throw new Error(`Read failed: ${description} (0x${code})`);
     }
     return response.data ?? new Uint8Array(0);
   }
@@ -750,7 +788,9 @@ export class LegacyS7Protocol {
    */
   public checkWriteResponse(response: LegacyS7Response): void {
     if (response.returnCode !== undefined && response.returnCode !== 0xff) {
-      throw new Error(`Write failed with return code 0x${(response.returnCode ?? 0).toString(16).padStart(2, "0")}`);
+      const code = (response.returnCode ?? 0).toString(16).padStart(2, "0");
+      const description = getReturnCodeDescription(response.returnCode ?? 0);
+      throw new Error(`Write failed: ${description} (0x${code})`);
     }
   }
 

@@ -316,4 +316,16 @@ describe("LegacyS7AsyncClient", () => {
     const szl = await client.readSzl(0x001c, 0);
     expect(szl.Header.LengthDR).toBeGreaterThan(0);
   });
+
+  it("supports raw iso exchange buffer passthrough", async () => {
+    const transport = new FakeLegacyTransport();
+    const client = new LegacyS7AsyncClient(transport);
+    await client.connect({ address: "127.0.0.1", rack: 0, slot: 1 });
+
+    const payload = Uint8Array.of(0x02, 0xf0, 0x80, 0x32, 0x01, 0x00, 0x00);
+    const response = await client.isoExchangeBuffer(payload);
+    // Raw iso exchange should return transport-level response (including COTP DT header).
+    expect(response[0]).toBe(0x02);
+    expect(response[1]).toBe(0xf0);
+  });
 });

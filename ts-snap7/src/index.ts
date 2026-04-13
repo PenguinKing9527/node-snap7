@@ -96,10 +96,12 @@ export type { SocketFactory, SocketLike, TransportConnectOptions, TransportReque
 export {
   LegacyS7AsyncClient,
   LegacyS7Protocol,
+  getReturnCodeDescription,
   S7Area,
   S7BlockSubfunction,
   S7Function,
   S7PduType,
+  S7_RETURN_CODES,
   S7WordLen,
   legacyS7Status
 } from "./s7/legacy/index.js";
